@@ -1,0 +1,24 @@
+# Data, models and results live in the Hugging Face dataset repo, not in git.
+# Leading slash = top-level folder only; a bare "data/" would also hide src/data/.
+/data/
+/models/
+/results/
+Raw_Data_*.csv
+*.parquet
+*.nc
+
+# Reference material: copyrighted papers, private planning documents, style references
+/papers/
+/pdd_pages/
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Credentials: never commit. Keys belong in Colab Secrets or local environment variables.
+.env
+.cdsapirc
+*.token
