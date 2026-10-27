@@ -7,6 +7,7 @@ instead of starting over.
 """
 
 import io
+import json
 
 import pandas as pd
 from huggingface_hub import HfApi, hf_hub_download
@@ -73,3 +74,14 @@ class HFStore:
     def read_df(self, path):
         local = hf_hub_download(self.repo_id, path, repo_type='dataset', token=self.token)
         return pd.read_parquet(local) if path.endswith('.parquet') else pd.read_csv(local)
+
+    def upload_json(self, obj, path, message):
+        self._upload(io.BytesIO(json.dumps(obj, indent=1, sort_keys=True).encode('utf-8')), path, message)
+
+    def read_json(self, path, default=None):
+        if not self.exists(path):
+            return default
+        # force_download: small bookkeeping files change between runs, so never trust a cached copy
+        local = hf_hub_download(self.repo_id, path, repo_type='dataset', token=self.token, force_download=True)
+        with open(local, encoding='utf-8') as f:
+            return json.load(f)
