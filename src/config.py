@@ -141,9 +141,13 @@ INVERSION_HOURS_UTC = ["00:00", "03:00"]
 # NASA FIRMS active fires. Bounding box W,S,E,N covers India plus the Pakistani
 # Punjab and Bangladesh, both inside the 500 km transport radius of target cities.
 FIRMS_API_URL = "https://firms.modaps.eosdis.nasa.gov/api"
+FIRMS_STATUS_URL = "https://firms.modaps.eosdis.nasa.gov/mapserver/mapkey_status/"
 FIRMS_BBOX = "68.1,6.5,97.4,35.5"
 FIRMS_DAY_RANGE = 5  # API maximum per request
 FIRMS_MIN_CONFIDENCE = 70
+# A MAP_KEY allows 5000 transactions per 10-minute window, and a multi-day request
+# over all of India counts as several; after a refusal, wait out the whole window.
+FIRMS_LIMIT_WAIT_SECONDS = 600
 
 # ---------------------------------------------------------------------------
 # AQI Event Thresholds

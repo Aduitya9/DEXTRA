@@ -6,8 +6,9 @@ here before doing work, so an interrupted Colab session resumes where it stopped
 instead of starting over.
 """
 
-import io
 import json
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 from huggingface_hub import HfApi, hf_hub_download
@@ -49,16 +50,20 @@ class HFStore:
         self._upload(str(local_path), path, message)
 
     def upload_df(self, df, path, message):
-        """Upload a DataFrame as Parquet (.parquet) or CSV (.csv)."""
-        buf = io.BytesIO()
-        if path.endswith('.parquet'):
-            df.to_parquet(buf, index=False)
-        elif path.endswith('.csv'):
-            buf.write(df.to_csv(index=False).encode('utf-8'))
-        else:
+        """Upload a DataFrame as Parquet (.parquet) or CSV (.csv).
+
+        Written to a temporary file first: Hugging Face's Xet storage only takes
+        file paths, and falls back to a slower plain-HTTP upload for in-memory buffers.
+        """
+        if not path.endswith(('.parquet', '.csv')):
             raise ValueError(f"Unsupported file type for {path}")
-        buf.seek(0)
-        self._upload(buf, path, message)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / Path(path).name
+            if path.endswith('.parquet'):
+                df.to_parquet(local, index=False)
+            else:
+                df.to_csv(local, index=False)
+            self._upload(str(local), path, message)
 
     def upload_folder(self, local_dir, path_in_repo, message):
         """One commit for a whole folder (e.g. a batch of CPCB station files)."""
@@ -76,7 +81,10 @@ class HFStore:
         return pd.read_parquet(local) if path.endswith('.parquet') else pd.read_csv(local)
 
     def upload_json(self, obj, path, message):
-        self._upload(io.BytesIO(json.dumps(obj, indent=1, sort_keys=True).encode('utf-8')), path, message)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / Path(path).name
+            local.write_text(json.dumps(obj, indent=1, sort_keys=True), encoding='utf-8')
+            self._upload(str(local), path, message)
 
     def read_json(self, path, default=None):
         if not self.exists(path):
