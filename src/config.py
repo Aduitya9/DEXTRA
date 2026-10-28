@@ -86,22 +86,33 @@ ARCHETYPE_CLUSTERS = ['IGP-Biomass', 'Coastal-Mixed', 'Industrial', 'Traffic-Urb
 N_ARCHETYPES = len(ARCHETYPE_CLUSTERS)
 
 # Pollutant & Feature Definitions
-# The 25 model variates: 6 pollutants + 7 meteorological + 4 fire + 4 calendar
+# The 26 model variates: 6 pollutants + 8 meteorological + 4 fire + 4 calendar
 # + 4 city metadata. CITY_META_FEATURES were missing from the original config,
-# which would have produced a shape mismatch against the 25-variate backbone.
+# which would have produced a shape mismatch against the backbone.
+#
+# blh_min, the night-time minimum of the boundary layer, was added on the
+# evidence of the full seven years. It tracks AQI better than the daily mean in
+# 14 of the 15 cities (Hyderabad -0.600 against -0.156, Guwahati -0.353 where
+# the mean has the wrong sign at +0.061), and it does so in every season:
+# -0.353 in winter and -0.345 outside it, where the daily mean reverses from
+# -0.407 to +0.172 and so nearly cancels itself over a year. Both are kept, at
+# r = 0.405 they are not substitutes, and the mean's seasonal reversal is itself
+# a signal the backbone can read.
 POLLUTANTS = ['PM2.5', 'PM10', 'NO2', 'SO2', 'CO', 'O3']
-METEO_FEATURES = ['blh', 'temp2m', 'wind_speed', 'wind_dir', 'precip', 'inv_idx', 'blh_anomaly']
+METEO_FEATURES = ['blh', 'blh_min', 'temp2m', 'wind_speed', 'wind_dir', 'precip', 'inv_idx', 'blh_anomaly']
 FIRE_FEATURES = ['fire_count_100km', 'fire_count_500km', 'frp_500km', 'is_stubble_season']
 TEMPORAL_FEATURES = ['day_of_week', 'month', 'day_of_year', 'is_diwali']
 CITY_META_FEATURES = ['archetype_id', 'station_density', 'coastal_flag', 'industrial_index']
 
 ALL_FEATURES = POLLUTANTS + METEO_FEATURES + FIRE_FEATURES + TEMPORAL_FEATURES + CITY_META_FEATURES
 
-N_VARIATES = 25
+N_VARIATES = 26
 assert len(ALL_FEATURES) == N_VARIATES, f"Expected {N_VARIATES} variates, got {len(ALL_FEATURES)}"
 
-# Meteorological gating signals routed to the MoE router (Novelty 2)
-GATE_FEATURES = ['blh', 'wind_speed', 'inv_idx', 'fire_count_500km', 'blh_anomaly', 'is_stubble_season']
+# Meteorological gating signals routed to the MoE router (Novelty 2).
+# The gate reads blh_min rather than the daily mean: a router that decides which
+# regime a day belongs to cannot use a feature whose sign depends on the regime.
+GATE_FEATURES = ['blh_min', 'wind_speed', 'inv_idx', 'fire_count_500km', 'blh_anomaly', 'is_stubble_season']
 
 # Time Series Window Parameters
 LOOKBACK_WINDOW = 14  # 14 days input lookback

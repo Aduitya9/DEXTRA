@@ -245,6 +245,6 @@ def apply_scalers(daily, params):
 
 
 def feature_columns():
-    """The 25 model variates, in a fixed order."""
+    """The model variates, in a fixed order (N_VARIATES of them)."""
     return (list(POLLUTANTS) + list(METEO_FEATURES) + list(FIRE_FEATURES)
             + list(TEMPORAL_FEATURES) + list(CITY_META_FEATURES))
