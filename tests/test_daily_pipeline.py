@@ -334,3 +334,46 @@ def test_calendar_features_cover_the_india_specific_events():
     assert out['is_diwali'].tolist() == [1, 0]
     assert out['is_stubble_season'].tolist() == [1, 0]
     assert out['day_of_year'].iloc[0] == 316
+
+
+# --------------------------------------------------------------------------- year boundaries
+
+def test_fire_counts_from_overlapping_year_files_are_summed_not_duplicated():
+    # FIRMS stamps detections in UTC, so a fire after 18:30 on 31 December belongs
+    # to 1 January IST and arrives in the PREVIOUS year's file. Both files then
+    # report that Indian day. The real 2022/2023 boundary did exactly this.
+    older = pd.DataFrame({'city': ['Delhi'], 'date': [pd.Timestamp('2023-01-01')],
+                          'fire_count_100km': [2], 'fire_count_500km': [5], 'frp_500km': [40.0]})
+    newer = pd.DataFrame({'city': ['Delhi'], 'date': [pd.Timestamp('2023-01-01')],
+                          'fire_count_100km': [1], 'fire_count_500km': [3], 'frp_500km': [10.0]})
+
+    out = fire_features.fill_calendar(pd.concat([older, newer], ignore_index=True),
+                                      '2023-01-01', '2023-01-02', cities={'Delhi': {}})
+
+    day = out[out.date == pd.Timestamp('2023-01-01')]
+    assert len(day) == 1                                   # one row, not two
+    assert day['fire_count_500km'].iloc[0] == 8            # 5 + 3: different fires
+    assert day['frp_500km'].iloc[0] == pytest.approx(50.0)
+    assert out['fire_count_500km'].dtype == 'int64'
+
+
+def test_a_source_that_repeats_a_city_day_is_refused_not_silently_multiplied():
+    # A left join on a duplicated key multiplies rows rather than failing, which
+    # would inflate the dataset and reweight anything trained on it.
+    pollutants = _daily_frame(['Delhi'], start='2021-01-01', end='2021-01-03')
+    meteo = pd.DataFrame({'city': 'Delhi',
+                          'date': pd.to_datetime(['2021-01-01', '2021-01-01', '2021-01-02']),
+                          'blh': [100.0, 200.0, 300.0]})
+    fire = pd.DataFrame({'city': 'Delhi', 'date': pd.to_datetime(['2021-01-01']),
+                         'fire_count_500km': [1]})
+
+    with pytest.raises(ValueError, match='meteo_daily repeats 1 city-day'):
+        assemble.merge_sources(pollutants, meteo, fire)
+
+
+def test_era5_morning_readings_never_cross_the_indian_day_boundary():
+    # Pressure levels are archived at 00 and 03 UTC, which are 05:30 and 08:30 IST
+    # on the same date. Unlike the fire files, year files cannot overlap.
+    utc = pd.to_datetime([f'{y}-12-31 {h}:00' for y in (2022, 2023) for h in ('00', '03')])
+    shifted = era5_features.to_ist(pd.DataFrame({'time_utc': utc}))
+    assert (shifted['date'].dt.strftime('%m-%d') == '12-31').all()

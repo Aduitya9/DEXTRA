@@ -40,8 +40,30 @@ DEFAULT_SUPPORT_DAYS = 30
 # --------------------------------------------------------------------------- merge
 
 
+def _require_one_row_per_city_day(name, frame):
+    """Refuse a source that repeats a city-day.
+
+    A left join against a duplicated key multiplies rows instead of failing, so a
+    single repeated day in any one source would quietly inflate the dataset and
+    reweight whatever is trained on it. Sources built from per-year files are the
+    ones at risk: UTC-stamped data shifted into IST spills across the New Year.
+    """
+    duplicated = frame.duplicated(['city', 'date'])
+    if duplicated.any():
+        examples = ', '.join(f"{row.city} {row.date:%Y-%m-%d}"
+                             for row in frame.loc[duplicated].head(3).itertuples())
+        raise ValueError(
+            f"{name} repeats {int(duplicated.sum())} city-day(s) ({examples}). "
+            "Every source must hold one row per city per day before merging."
+        )
+
+
 def merge_sources(pollutant_daily, meteo_daily, fire_daily):
     """One row per city-day: pollutants, meteorology and fire counts."""
+    for name, frame in (('pollutant_daily', pollutant_daily),
+                        ('meteo_daily', meteo_daily),
+                        ('fire_daily', fire_daily)):
+        _require_one_row_per_city_day(name, frame)
     merged = pollutant_daily.merge(meteo_daily, on=['city', 'date'], how='left')
     return merged.merge(fire_daily, on=['city', 'date'], how='left')
 

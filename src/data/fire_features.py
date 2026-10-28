@@ -89,10 +89,15 @@ def fill_calendar(fire_daily, start, end, cities=None):
         [list(cities), pd.date_range(start, end, freq='D')], names=['city', 'date']
     )
     value_columns = [c for c in fire_daily.columns if c not in ('city', 'date')]
-    out = (fire_daily.set_index(['city', 'date'])
-                     .reindex(index)
-                     .fillna({c: 0 for c in value_columns})
-                     .reset_index())
+    # One year's detections can land on two Indian days: FIRMS timestamps are UTC,
+    # so anything after 18:30 on 31 December belongs to 1 January IST and arrives
+    # in the previous year's file. Both files then report that day, and the two
+    # rows count different fires -- so the day's totals are their sum. Summing
+    # also makes the order and granularity of the input files stop mattering.
+    collapsed = fire_daily.groupby(['city', 'date'], sort=False)[value_columns].sum()
+    out = (collapsed.reindex(index)
+                    .fillna({c: 0 for c in value_columns})
+                    .reset_index())
     for column in value_columns:
         if column.startswith('fire_count'):
             out[column] = out[column].astype('int64')
