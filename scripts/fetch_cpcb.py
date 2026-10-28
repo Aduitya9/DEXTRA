@@ -14,10 +14,12 @@ this one stage cannot run where the rest of the pipeline runs.
 Resumable: anything already in the output folder is skipped, so an interrupted
 run costs only the files it had not reached.
 
---upload needs HF_TOKEN and HF_DATASET_REPO in the environment. It sends the
-daily table, which is a few megabytes; the raw station files stay on this
-machine unless --upload-raw is given, since re-hosting a government dataset is
-a licensing question of its own and notebook 02 only needs the daily table.
+--upload signs in with the token `hf auth login` stores, so nothing secret has
+to go in the environment or in shell history; HF_TOKEN still works if set. It
+sends the daily table, which is a few megabytes. The raw station files stay on
+this machine unless --upload-raw is given, since re-hosting a government
+dataset is a licensing question of its own and notebook 02 needs only the
+daily table.
 """
 
 import argparse
@@ -74,6 +76,7 @@ def main():
     parser.add_argument("--pause", type=float, default=0.3)
     parser.add_argument("--build", action="store_true", help="build the daily pollutant table")
     parser.add_argument("--upload", action="store_true", help="send the daily table to Hugging Face")
+    parser.add_argument("--repo", help="dataset repo, e.g. owner/name (default: $HF_DATASET_REPO)")
     parser.add_argument("--upload-raw", action="store_true", help="also send the station files")
     args = parser.parse_args()
 
@@ -101,10 +104,22 @@ def main():
 
     if not args.upload:
         return
-    token, repo = os.environ.get("HF_TOKEN"), os.environ.get("HF_DATASET_REPO")
-    if not (token and repo):
-        print("\n! Set HF_TOKEN and HF_DATASET_REPO to upload.")
+    # token=None lets huggingface_hub use the login stored by `hf auth login`,
+    # which keeps the token out of the environment and out of shell history.
+    token = os.environ.get("HF_TOKEN") or None
+    repo = args.repo or os.environ.get("HF_DATASET_REPO")
+    if not repo:
+        print("\n! Pass --repo <owner/name> or set HF_DATASET_REPO.")
         return
+    from huggingface_hub import HfApi
+    try:
+        who = HfApi(token=token).whoami()
+    except Exception:
+        print("\n! Not signed in to Hugging Face. Run `hf auth login` and paste a token\n"
+              "  with write access to the dataset repo, then re-run with --upload.\n"
+              f"  The daily table is already written to {local}, so nothing is lost.")
+        return
+    print(f"\nsigned in to Hugging Face as {who['name']}")
     from src.utils.hf_store import HFStore
     hf = HFStore(repo, token=token)
     hf.upload_file(local, POLLUTANT_PATH, "Daily city pollutants and CPCB AQI")
