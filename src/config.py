@@ -150,6 +150,34 @@ FIRMS_MIN_CONFIDENCE = 70
 FIRMS_LIMIT_WAIT_SECONDS = 600
 
 # ---------------------------------------------------------------------------
+# Daily aggregation
+# ---------------------------------------------------------------------------
+# CPCB timestamps are local Indian Standard Time; ERA5 and FIRMS are UTC. Everything
+# is shifted to IST before being grouped into days, so a "day" means the same span
+# in every source and matches CPCB's own daily AQI.
+IST_OFFSET = "5h30min"
+
+# CPCB National AQI methodology: PM2.5, PM10, NO2, SO2 and NH3 use the 24-hour mean;
+# CO and O3 use the highest 8-hour running mean of the day.
+POLLUTANTS_24H = ['PM2.5', 'PM10', 'NO2', 'SO2', 'NH3']
+POLLUTANTS_8H_MAX = ['CO', 'O3']
+MIN_HOURS_FOR_DAILY = 16   # CPCB: a 24-hour average needs at least 16 hourly values
+MIN_HOURS_FOR_8H = 6       # an 8-hour running mean needs at least 6 of its 8 hours
+
+# Hourly readings outside these bounds are instrument faults, not air quality.
+PHYSICAL_LIMITS = {
+    'PM2.5': (0.0, 999.0), 'PM10': (0.0, 1500.0), 'NO2': (0.0, 600.0),
+    'SO2': (0.0, 1000.0), 'CO': (0.0, 50.0), 'O3': (0.0, 500.0), 'NH3': (0.0, 1000.0),
+}
+
+# FIRMS detections kept for the fire features. type 0 is "presumed vegetation fire";
+# excluding the other types keeps persistent gas flares and volcanoes from showing up
+# as a constant fire count for industrial cities.
+FIRMS_VEGETATION_TYPE = 0
+FIRE_RADII_KM = {'fire_count_100km': 100.0, 'fire_count_500km': 500.0}
+FRP_RADIUS_KM = 500.0
+
+# ---------------------------------------------------------------------------
 # AQI Event Thresholds
 #
 # DECISION 4 (thresholds): two thresholds only, both CPCB category boundaries.
