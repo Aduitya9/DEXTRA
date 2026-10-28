@@ -377,3 +377,34 @@ def test_era5_morning_readings_never_cross_the_indian_day_boundary():
     utc = pd.to_datetime([f'{y}-12-31 {h}:00' for y in (2022, 2023) for h in ('00', '03')])
     shifted = era5_features.to_ist(pd.DataFrame({'time_utc': utc}))
     assert (shifted['date'].dt.strftime('%m-%d') == '12-31').all()
+
+
+# --------------------------------------------------------------------------- PM consistency
+
+def test_pm25_above_pm10_blanks_both_because_either_could_be_the_faulty_one():
+    daily = pd.DataFrame({'date': pd.to_datetime(['2021-01-01', '2021-01-02']),
+                          'PM2.5': [80.0, 40.0], 'PM10': [60.0, 100.0], 'NO2': [25.0, 25.0]})
+    out = daily_cpcb.drop_inconsistent_pm(daily)
+
+    assert out.loc[0, ['PM2.5', 'PM10']].isna().all()     # fine cannot exceed coarse
+    assert out.loc[0, 'NO2'] == 25.0                      # the rest of the day survives
+    assert out.loc[1, 'PM2.5'] == 40.0                    # a healthy day is untouched
+
+
+def test_coarse_dust_with_no_fine_fraction_is_rejected():
+    # Guwahati 2019-05-25: PM10 673 against PM2.5 19.7 carried one station to AQI 500.
+    daily = pd.DataFrame({'date': pd.to_datetime(['2019-05-25', '2019-05-26']),
+                          'PM2.5': [19.7, 150.0], 'PM10': [673.3, 500.0]})
+    out = daily_cpcb.drop_inconsistent_pm(daily)
+
+    assert out.loc[0, ['PM2.5', 'PM10']].isna().all()     # ratio 0.03 is not air, it is a fault
+    assert out.loc[1, 'PM2.5'] == 150.0                   # ratio 0.30 is an ordinary dusty day
+
+
+def test_a_station_with_faulty_pm_stops_counting_toward_that_day():
+    hours = pd.date_range('2021-01-15', periods=24, freq='h')
+    faulty = pd.DataFrame({'timestamp': hours, 'PM2.5': 10.0, 'PM10': 600.0})
+    out = daily_cpcb.station_daily(faulty)
+
+    assert out['PM2.5'].isna().all() and out['PM10'].isna().all()
+    assert not out['station_reported'].any()   # nothing left to report, so it is not counted

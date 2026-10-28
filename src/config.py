@@ -169,6 +169,12 @@ IST_OFFSET = "5h30min"
 # CO and O3 use the highest 8-hour running mean of the day.
 POLLUTANTS_24H = ['PM2.5', 'PM10', 'NO2', 'SO2', 'NH3']
 POLLUTANTS_8H_MAX = ['CO', 'O3']
+# PM2.5 is part of PM10, so it can neither exceed it nor be a negligible share of
+# it. Measured across 34,832 city-days the ratio has a median of 0.462 and a 1st
+# percentile of 0.208, so 0.05 sits far below any real dust event and flags only
+# instrument faults: 12 days in seven years, 11 of them Guwahati.
+MIN_PM25_PM10_RATIO = 0.05
+
 MIN_HOURS_FOR_DAILY = 16   # CPCB: a 24-hour average needs at least 16 hourly values
 MIN_HOURS_FOR_8H = 6       # an 8-hour running mean needs at least 6 of its 8 hours
 

@@ -12,11 +12,13 @@ Three steps, each kept separate so the rules stay visible:
   3. add_aqi        - CPCB AQI and category from the daily values.
 """
 
+import numpy as np
 import pandas as pd
 
 from src.config import (
     MIN_HOURS_FOR_8H,
     MIN_HOURS_FOR_DAILY,
+    MIN_PM25_PM10_RATIO,
     PHYSICAL_LIMITS,
     POLLUTANTS,
     POLLUTANTS_24H,
@@ -34,6 +36,29 @@ def clip_to_physical_limits(hourly, limits=PHYSICAL_LIMITS):
         if pollutant in out.columns:
             out.loc[~out[pollutant].between(low, high), pollutant] = pd.NA
             out[pollutant] = pd.to_numeric(out[pollutant], errors='coerce')
+    return out
+
+
+def drop_inconsistent_pm(daily, min_ratio=MIN_PM25_PM10_RATIO):
+    """Blank both PM channels on a station-day where they contradict each other.
+
+    PM2.5 is measured as part of PM10, so it cannot exceed it, and it cannot be a
+    negligible share of it either: whatever throws coarse particles into the air
+    throws fine ones too. Guwahati on 2019-05-25 reported PM10 673 against PM2.5
+    19.7, a ratio of 0.03, which carried that day to AQI 500 in a city whose
+    median is 83 -- on one station, with no second sensor to outvote it.
+
+    Which of the two is wrong cannot be known, so both go. The day then falls back
+    on this station's other pollutants, and on whatever other stations reported.
+    """
+    if not {'PM2.5', 'PM10'} <= set(daily.columns):
+        return daily
+    out = daily.copy()
+    fine, coarse = out['PM2.5'], out['PM10']
+    both = fine.notna() & coarse.notna()
+    impossible = both & (fine > coarse)
+    implausible = both & (coarse > 0) & ((fine / coarse) < min_ratio)
+    out.loc[impossible | implausible, ['PM2.5', 'PM10']] = np.nan
     return out
 
 
@@ -67,6 +92,7 @@ def station_daily(hourly, min_hours_24h=MIN_HOURS_FOR_DAILY, min_hours_8h=MIN_HO
     daily = pd.DataFrame(out)
     daily.index.name = 'date'
     daily = daily.reset_index()
+    daily = drop_inconsistent_pm(daily)
     present = [c for c in ALL_AGGREGATED if c in daily.columns]
     daily['station_reported'] = daily[present].notna().any(axis=1) if present else False
     for column in ('site_id', 'station'):
