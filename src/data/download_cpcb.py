@@ -96,9 +96,14 @@ def manifest_jobs(manifest, freq=DEFAULT_FREQ):
     return jobs
 
 
+def city_folder(city, prefix='raw/cpcb'):
+    """Where a city's files live. An empty prefix means the store's own root."""
+    return f"{prefix}/{city.lower()}" if prefix else city.lower()
+
+
 def store_path(job, prefix='raw/cpcb'):
     """Where a job's file lives on Hugging Face, grouped by city as notebook 02 expects."""
-    return f"{prefix}/{job['city'].lower()}/{job['filename']}"
+    return f"{city_folder(job['city'], prefix)}/{job['filename']}"
 
 
 def _flush(store, city, pending, prefix, log):
@@ -108,7 +113,7 @@ def _flush(store, city, pending, prefix, log):
     with tempfile.TemporaryDirectory() as tmp:
         for filename, content in pending:
             (Path(tmp) / filename).write_bytes(content)
-        store.upload_folder(tmp, f"{prefix}/{city.lower()}",
+        store.upload_folder(tmp, city_folder(city, prefix),
                             f"CPCB {city}: {len(pending)} station-years")
     log(f"  committed {len(pending)} files for {city}")
     return len(pending)

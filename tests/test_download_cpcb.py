@@ -144,3 +144,23 @@ def test_each_city_commits_into_its_own_folder():
 
     folders = {p.rsplit('/', 1)[0] for p in store.uploaded}
     assert folders == {'raw/cpcb/bhopal', 'raw/cpcb/guwahati'}
+
+
+def test_local_store_stands_in_for_the_hugging_face_one(tmp_path):
+    # CPCB blocks Colab's IP ranges, so the same download code has to be able to
+    # write to a folder. It must behave like the store it replaces.
+    from src.utils.local_store import LocalStore
+
+    store = LocalStore(tmp_path)
+    summary = download_cpcb.download_manifest(
+        _manifest(), store, session=FakeSession(), pause=0, prefix="", log=lambda *a: None)
+
+    assert summary['uploaded'] == 3
+    assert sorted(p.name for p in (tmp_path / "bhopal").iterdir()) == [
+        'Raw_Data_2021_site_5247_t_t_nagar_bhopal_mppcb_1Hr.csv',
+        'Raw_Data_2022_site_5247_t_t_nagar_bhopal_mppcb_1Hr.csv']
+    assert (tmp_path / "guwahati").is_dir()
+    # and a second run finds them rather than fetching again
+    again = download_cpcb.download_manifest(
+        _manifest(), store, session=FakeSession(), pause=0, prefix="", log=lambda *a: None)
+    assert again['skipped'] == 3 and again['uploaded'] == 0
