@@ -80,6 +80,13 @@ class HFStore:
         local = hf_hub_download(self.repo_id, path, repo_type='dataset', token=self.token)
         return pd.read_parquet(local) if path.endswith('.parquet') else pd.read_csv(local)
 
+    def upload_bytes(self, content, path, message):
+        """Upload raw bytes, for a file fetched elsewhere that should land here untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / Path(path).name
+            local.write_bytes(content)
+            self._upload(str(local), path, message)
+
     def upload_json(self, obj, path, message):
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / Path(path).name
