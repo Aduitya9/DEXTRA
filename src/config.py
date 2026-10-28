@@ -111,9 +111,17 @@ FORECAST_HORIZON = 3  # 3 days ahead forecasting (t+1, t+2, t+3)
 DATA_START_DATE = "2019-01-01"
 DATA_END_DATE = "2025-12-31"
 
-# Temporal split boundaries (no leakage: splits are by date, not shuffled)
+# Temporal split boundaries (no leakage: splits are by date, not shuffled).
+#
+# Three whole years end the record, so validation and test are one calendar year
+# each: 2019-2023 train, 2024 validate, 2025 test. Ending validation mid-2024
+# would leave it without an October, November or December, and a model chosen on
+# a window that never contains the stubble-burning season is chosen on a window
+# that never contains the thing this project forecasts. Measured on the CPCB
+# data: that half-year holds 121 days above AQI 200, against 280 for the full
+# year, and 600 winter-month days against 1,210.
 TRAIN_END_DATE = "2023-12-31"
-VAL_END_DATE = "2024-06-30"
+VAL_END_DATE = "2024-12-31"
 
 # ---------------------------------------------------------------------------
 # External data retrieval
