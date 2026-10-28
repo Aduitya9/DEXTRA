@@ -106,12 +106,50 @@ def inversion_levels_from_surface(surface):
     return {city: select_inversion_level(value) for city, value in means.items()}
 
 
-def build_meteo_daily(surface_by_city, pressure):
-    """Daily meteorological table for every city: surface features, inversion index, BLH anomaly."""
+def apply_blh_patch(surface, patch):
+    """Fill missing boundary-layer height from the CDS patch, matched on city and hour.
+
+    Open-Meteo's ERA5 archive carries no boundary-layer height for Jan-Jun 2024 in
+    any city, which is exactly DEXTRA's validation window, so notebook 01 refetches
+    those months from CDS. Without this the gate would be blind on two of its six
+    inputs for every validation day, and the model chosen on that split would be
+    chosen on nothing.
+
+    Only missing hours are filled. Where both sources have a value they agree to
+    about a metre, so leaving Open-Meteo's in place keeps the series single-sourced
+    everywhere it can be and confines CDS to the gap it was fetched for.
+    """
+    out = surface.copy()
+    gap = out['blh'].isna()
+    if patch is None or not len(patch) or not gap.any():
+        return out
+    fill = patch.drop_duplicates(['city', 'time_utc']).set_index(['city', 'time_utc'])['blh']
+    keys = pd.MultiIndex.from_arrays([out.loc[gap, 'city'], out.loc[gap, 'time_utc']])
+    out.loc[gap, 'blh'] = fill.reindex(keys).to_numpy()
+    return out
+
+
+def build_meteo_daily(surface_by_city, pressure, blh_patch=None, start=None, end=None):
+    """Daily meteorological table for every city: surface features, inversion index, BLH anomaly.
+
+    `start` and `end` trim the result to the project's calendar window. Shifting UTC
+    into IST pushes the last few hours of the final UTC day into a calendar day past
+    the end of that window, and such a day holds neither of the two morning pressure
+    readings, so its inversion index is empty. It is an artefact of the shift rather
+    than a real day, and trimming is what keeps it from looking like missing data.
+    """
+    if blh_patch is not None and len(blh_patch):
+        surface_by_city = [apply_blh_patch(frame, blh_patch) for frame in surface_by_city]
     surface_all = pd.concat(surface_by_city, ignore_index=True)
     daily = pd.concat([surface_daily(frame) for frame in surface_by_city], ignore_index=True)
     daily = add_blh_anomaly(daily)
 
     levels = inversion_levels_from_surface(surface_all)
     inversions = inversion_index(pressure, surface_all, levels)
-    return daily.merge(inversions, on=['city', 'date'], how='left')
+    daily = daily.merge(inversions, on=['city', 'date'], how='left')
+
+    if start is not None:
+        daily = daily[daily['date'] >= pd.Timestamp(start)]
+    if end is not None:
+        daily = daily[daily['date'] <= pd.Timestamp(end)]
+    return daily.reset_index(drop=True)

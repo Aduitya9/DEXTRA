@@ -136,6 +136,73 @@ def test_blh_anomaly_is_measured_against_the_citys_own_normal():
     assert out['blh_anomaly'].iloc[20] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_blh_patch_fills_the_2024_gap_without_overwriting_open_meteo():
+    # Open-Meteo has no boundary-layer height for Jan-Jun 2024; CDS supplies it.
+    index = pd.date_range('2024-06-29 00:00', periods=96, freq='h')
+    surface = pd.DataFrame({'city': 'Delhi', 'time_utc': index, 'blh': 800.0})
+    gap = surface.time_utc < pd.Timestamp('2024-07-01')
+    surface.loc[gap, 'blh'] = np.nan
+    # The patch covers the gap AND the overlap days the two sources share.
+    patch = pd.DataFrame({'city': 'Delhi', 'time_utc': index, 'blh': 333.0})
+
+    out = era5_features.apply_blh_patch(surface, patch)
+
+    assert out['blh'].isna().sum() == 0                            # gap closed
+    assert (out.loc[gap, 'blh'] == 333.0).all()                    # from CDS
+    assert (out.loc[~gap, 'blh'] == 800.0).all()                   # Open-Meteo untouched
+
+
+def test_blh_patch_leaves_hours_it_does_not_cover_missing():
+    index = pd.date_range('2024-01-01 00:00', periods=48, freq='h')
+    surface = pd.DataFrame({'city': 'Delhi', 'time_utc': index, 'blh': np.nan})
+    patch = pd.DataFrame({'city': 'Delhi', 'time_utc': index[:24], 'blh': 333.0})
+
+    out = era5_features.apply_blh_patch(surface, patch)
+
+    assert out['blh'].notna().sum() == 24      # silently inventing the rest would be worse
+    assert era5_features.apply_blh_patch(surface, None)['blh'].isna().all()
+
+
+def test_build_meteo_daily_applies_the_patch_so_no_day_is_blind():
+    index = pd.date_range('2024-01-01 00:00', periods=72, freq='h')
+    surface = pd.DataFrame({
+        'city': 'Delhi', 'time_utc': index, 'blh': np.nan, 'temp2m': 20.0,
+        'precip': 0.0, 'wind_speed': 1.0, 'wind_dir': 90.0, 'surface_pressure': 983.5,
+    })
+    patch = pd.DataFrame({'city': 'Delhi', 'time_utc': index, 'blh': 250.0})
+    pressure = pd.DataFrame({'city': 'Delhi', 'time_utc': index[::3],
+                             'temp_900hPa': 25.0, 'temp_925hPa': 99.0})
+
+    unpatched = era5_features.build_meteo_daily([surface], pressure)
+    patched = era5_features.build_meteo_daily([surface], pressure, patch)
+
+    assert unpatched['blh'].isna().all()                           # the bug this guards
+    assert patched['blh'].isna().sum() == 0
+    assert patched['blh_min'].iloc[0] == pytest.approx(250.0)
+    assert patched['inversion_level_hpa'].iloc[0] == 900           # Delhi's own level
+
+
+def test_the_partial_day_the_ist_shift_creates_is_trimmed_away():
+    # The last UTC hours of 31 Dec land on 1 Jan in IST, a day with no morning
+    # pressure reading. Left in, it looks like missing data for every city.
+    index = pd.date_range('2024-12-30 00:00', periods=48, freq='h')
+    surface = pd.DataFrame({
+        'city': 'Delhi', 'time_utc': index, 'blh': 400.0, 'temp2m': 20.0,
+        'precip': 0.0, 'wind_speed': 1.0, 'wind_dir': 90.0, 'surface_pressure': 983.5,
+    })
+    # Pressure levels are archived at 00 and 03 UTC only, so the partial day gets none.
+    mornings = index[index.hour.isin([0, 3])]
+    pressure = pd.DataFrame({'city': 'Delhi', 'time_utc': mornings, 'temp_900hPa': 25.0})
+
+    untrimmed = era5_features.build_meteo_daily([surface], pressure)
+    trimmed = era5_features.build_meteo_daily([surface], pressure, None, '2024-01-01', '2024-12-31')
+
+    assert untrimmed['date'].max() == pd.Timestamp('2025-01-01')
+    assert untrimmed['inv_idx'].isna().any()                 # the false alarm
+    assert trimmed['date'].max() == pd.Timestamp('2024-12-31')
+    assert trimmed['inv_idx'].isna().sum() == 0
+
+
 def test_inversion_index_uses_each_citys_own_level_and_keeps_the_strongest_morning():
     times = pd.to_datetime(['2024-01-01 00:00', '2024-01-01 03:00'])
     pressure = pd.DataFrame({'city': 'Bengaluru', 'time_utc': times,
