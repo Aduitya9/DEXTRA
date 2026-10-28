@@ -177,9 +177,10 @@ class CdsJobRunner:
 
     ACTIVE = ('accepted', 'running', 'successful')
 
-    def __init__(self, client, store, record_path='meta/cds_jobs.json', poll_seconds=60, log=print):
+    def __init__(self, client, store, record_path='meta/cds_jobs.json', poll_seconds=30,
+                 poll_max_seconds=300, log=print):
         self.client, self.store, self.record_path = client, store, record_path
-        self.poll_seconds, self.log = poll_seconds, log
+        self.poll_seconds, self.poll_max_seconds, self.log = poll_seconds, poll_max_seconds, log
         self.records = store.read_json(record_path, default={}) if store.exists(record_path) else {}
 
     def _save(self, message):
@@ -201,6 +202,27 @@ class CdsJobRunner:
                 return remote
         return None
 
+    def _wait_until_ready(self, remote):
+        """Poll until the job succeeds, returning the seconds waited.
+
+        One status call per poll, with a widening interval: short at first so a
+        job that runs straight away is picked up quickly, then up to poll_max
+        seconds apart, because a queued job can sit for hours and ECMWF watches
+        for heavy API use.
+        """
+        status, waited, interval = None, 0, self.poll_seconds
+        while True:
+            current = remote.status
+            if current != status:
+                status = current
+                self.log(f"  {datetime.now(timezone.utc):%H:%M} UTC  status: {status}")
+            if status not in ('accepted', 'running'):
+                remote.results_ready   # raises with CDS's reason unless it succeeded
+                return waited
+            time.sleep(interval)
+            waited += interval
+            interval = min(interval * 1.5, self.poll_max_seconds)
+
     def run(self, key, dataset, request, target, reuse_existing=True):
         """Download the result of `request` to `target`, submitting only if no matching job exists."""
         remote = (self._recorded(key) or self._already_on_cds(dataset, request)) if reuse_existing else None
@@ -214,13 +236,7 @@ class CdsJobRunner:
                              'recorded_utc': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         self._save(f"CDS job record: {key}")
 
-        status, waited = None, 0
-        while not remote.results_ready:   # raises ProcessingFailedError if CDS rejects or fails it
-            if remote.status != status:
-                status = remote.status
-                self.log(f"  {datetime.now(timezone.utc):%H:%M} UTC  status: {status}")
-            time.sleep(self.poll_seconds)
-            waited += self.poll_seconds
+        waited = self._wait_until_ready(remote)
         self.log(f"  ready after {waited / 3600:.1f} h of waiting here; downloading")
         try:
             path = remote.download(str(target))

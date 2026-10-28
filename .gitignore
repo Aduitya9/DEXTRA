@@ -22,3 +22,6 @@ __pycache__/
 .env
 .cdsapirc
 *.token
+
+# Agent/editor plugin installs (hundreds of MB, not part of the project)
+.agents/

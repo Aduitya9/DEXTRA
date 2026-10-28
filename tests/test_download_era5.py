@@ -134,21 +134,24 @@ class _FakeRemote:
     def __init__(self, request_id, dataset, request, statuses, writer, fail_download=False):
         self.request_id, self.collection_id, self.request = request_id, dataset, request
         self._statuses, self._writer, self._fail = list(statuses), writer, fail_download
-        self.polls = 0
+        self.polls = self.downloads = 0
 
     @property
     def status(self):
-        return self._statuses[min(self.polls, len(self._statuses) - 1)]
+        # Mirrors the real client: each read is an API call that can show a new status.
+        status = self._statuses[min(self.polls, len(self._statuses) - 1)]
+        self.polls += 1
+        return status
 
     @property
     def results_ready(self):
-        status = self.status
-        self.polls += 1
+        status = self._statuses[min(self.polls, len(self._statuses) - 1)]
         if status in ('failed', 'rejected'):
             raise RuntimeError(f'CDS job {status}')
         return status == 'successful'
 
     def download(self, target):
+        self.downloads += 1
         if self._fail:
             raise OSError('results expired')
         self._writer().to_netcdf(target)
@@ -180,7 +183,7 @@ class _FakeCdsClient:
 
 
 def _runner(client, store):
-    return era5.CdsJobRunner(client, store, poll_seconds=0, log=lambda *_: None)
+    return era5.CdsJobRunner(client, store, poll_seconds=0, poll_max_seconds=0, log=lambda *_: None)
 
 
 def test_runner_submits_one_request_and_clears_its_record(tmp_path):
@@ -212,7 +215,7 @@ def test_runner_adopts_matching_job_already_on_cds(tmp_path):
 
     era5.download_pressure_year(_runner(client, _FakeStore()), 2021, tmp_path)
     assert client.submitted == []
-    assert queued_by_old_notebook.polls > 0 and other_year.polls == 0
+    assert queued_by_old_notebook.downloads == 1 and other_year.downloads == 0
 
 
 def test_runner_resubmits_once_when_an_adopted_result_has_expired(tmp_path):
@@ -297,3 +300,21 @@ def test_fetch_surface_hourly_asks_for_raw_grid_values_and_keeps_gaps_as_nan():
     assert session.params['wind_speed_unit'] == 'ms'
     assert df['blh'].tolist()[0] == 1.0 and np.isnan(df['blh'].iloc[1])
     assert df['grid_elevation'].iloc[0] == 220.0
+
+def test_polling_makes_one_status_call_per_poll_and_backs_off():
+    dataset, request = era5.cds_request(2024, 'pressure')
+    queued = _FakeRemote('q', dataset, request, ['accepted', 'accepted', 'running', 'successful'], _pressure_dataset)
+    runner = era5.CdsJobRunner(_FakeCdsClient(), _FakeStore(), poll_seconds=10, poll_max_seconds=40,
+                               log=lambda *_: None)
+    slept = []
+    import src.data.download_era5 as mod
+    real_sleep = mod.time.sleep
+    mod.time.sleep = slept.append
+    try:
+        waited = runner._wait_until_ready(queued)
+    finally:
+        mod.time.sleep = real_sleep
+
+    assert queued.polls == 4            # one status read per poll, not two or three
+    assert slept == [10, 15, 22.5]      # interval widens by 1.5x, capped at poll_max_seconds
+    assert waited == pytest.approx(47.5)
