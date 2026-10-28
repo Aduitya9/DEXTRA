@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 import requests
@@ -44,14 +46,17 @@ class FakeSession:
 
 class FakeStore:
     def __init__(self, existing=()):
-        self.existing, self.uploaded = set(existing), {}
+        self.existing, self.uploaded, self.commits = set(existing), {}, 0
 
     def files(self, prefix=''):
         return [p for p in self.existing if p.startswith(prefix)]
 
-    def upload_bytes(self, content, path, message):
-        self.uploaded[path] = content
-        self.existing.add(path)
+    def upload_folder(self, local_dir, path_in_repo, message):
+        self.commits += 1
+        for item in Path(local_dir).iterdir():
+            path = f"{path_in_repo}/{item.name}"
+            self.uploaded[path] = item.read_bytes()
+            self.existing.add(path)
 
 
 def test_filename_matches_what_the_portal_would_have_saved():
@@ -98,7 +103,8 @@ def test_a_rerun_skips_what_already_landed():
     summary = download_cpcb.download_manifest(
         _manifest(), store, session=FakeSession(), pause=0, log=lambda *a: None)
 
-    assert summary == {'uploaded': 2, 'skipped': 1, 'empty': 0, 'failed': 0}
+    assert summary['uploaded'] == 2 and summary['skipped'] == 1
+    assert summary['empty'] == 0 and summary['failed'] == 0
     assert done not in store.uploaded          # the finished one was not fetched again
     assert len(store.uploaded) == 2
 
@@ -111,3 +117,30 @@ def test_an_empty_year_is_counted_rather_than_uploaded():
 
     assert summary['empty'] == 2 and summary['uploaded'] == 1
     assert all('2021' in path for path in store.uploaded)
+
+
+def test_uploads_are_batched_rather_than_one_commit_per_file():
+    # 478 files is the real run. A commit each would be slow and is the kind of
+    # rapid-fire write the Hub rate-limits, so batches are what go up.
+    many = pd.DataFrame([
+        {'city': 'Delhi', 'site_id': 300 + i, 'station_name': f'Station {i}, Delhi - DPCC',
+         'years': '2019 2020 2021 2022 2023 2024 2025'}
+        for i in range(6)
+    ])
+    store = FakeStore()
+    summary = download_cpcb.download_manifest(
+        many, store, session=FakeSession(), pause=0, batch_size=25, log=lambda *a: None)
+
+    assert summary['uploaded'] == 42          # 6 stations x 7 years
+    assert summary['commits'] == 2            # not 42
+    assert len(store.uploaded) == 42
+    assert all(p.startswith('raw/cpcb/delhi/') for p in store.uploaded)
+
+
+def test_each_city_commits_into_its_own_folder():
+    store = FakeStore()
+    download_cpcb.download_manifest(
+        _manifest(), store, session=FakeSession(), pause=0, log=lambda *a: None)
+
+    folders = {p.rsplit('/', 1)[0] for p in store.uploaded}
+    assert folders == {'raw/cpcb/bhopal', 'raw/cpcb/guwahati'}

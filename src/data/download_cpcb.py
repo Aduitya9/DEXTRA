@@ -19,7 +19,9 @@ than that: a station reporting fewer species can be 98% complete in 747 KB.
 """
 
 import re
+import tempfile
 import time
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -99,38 +101,68 @@ def store_path(job, prefix='raw/cpcb'):
     return f"{prefix}/{job['city'].lower()}/{job['filename']}"
 
 
+def _flush(store, city, pending, prefix, log):
+    """Commit one batch of a city's files. Returns how many were uploaded."""
+    if not pending:
+        return 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for filename, content in pending:
+            (Path(tmp) / filename).write_bytes(content)
+        store.upload_folder(tmp, f"{prefix}/{city.lower()}",
+                            f"CPCB {city}: {len(pending)} station-years")
+    log(f"  committed {len(pending)} files for {city}")
+    return len(pending)
+
+
 def download_manifest(manifest, store, session=None, freq=DEFAULT_FREQ, pause=0.5,
-                      prefix='raw/cpcb', log=print):
+                      prefix='raw/cpcb', batch_size=25, log=print):
     """Fetch every station-year in the manifest and upload it, skipping what is already there.
 
+    Uploads go up a batch at a time, one commit per batch. A commit per file would
+    mean 478 of them, which is slow and is the kind of rapid-fire write the Hub
+    rate-limits; batching by city keeps it to roughly twenty.
+
     Resumable by design: the run is long enough that a dropped Colab session is
-    likely, and re-running must not re-fetch what landed before it dropped.
+    likely, and re-running must not re-fetch what landed before it dropped. The
+    cost of a drop is bounded by `batch_size` -- whatever was fetched but not yet
+    committed is fetched again.
     """
     session = session or new_session()
     jobs = manifest_jobs(manifest, freq)
     have = set(store.files(prefix))
-    summary = {'uploaded': 0, 'skipped': 0, 'empty': 0, 'failed': 0}
+    summary = {'uploaded': 0, 'skipped': 0, 'empty': 0, 'failed': 0, 'commits': 0}
 
-    for i, job in enumerate(jobs, 1):
-        path = store_path(job, prefix)
-        if path in have:
-            summary['skipped'] += 1
-            continue
-        try:
-            content = fetch_station_year(session, job['year'], job['site_id'], freq)
-        except CpcbError as exc:
-            summary['failed'] += 1
-            log(f"  [{i}/{len(jobs)}] ! {job['filename']}: {exc}")
-            continue
-        if content is None:
-            # The manifest was built from file sizes, so a year can turn out empty
-            # after all; recording it is more useful than silently moving on.
-            summary['empty'] += 1
-            log(f"  [{i}/{len(jobs)}] - {job['filename']}: no readings")
-            continue
-        store.upload_bytes(content, path, f"CPCB {job['city']} {job['station_name']} {job['year']}")
-        summary['uploaded'] += 1
-        if summary['uploaded'] % 25 == 0:
-            log(f"  [{i}/{len(jobs)}] {summary['uploaded']} uploaded")
-        time.sleep(pause)
+    by_city = {}
+    for job in jobs:
+        by_city.setdefault(job['city'], []).append(job)
+
+    done = 0
+    for city, city_jobs in by_city.items():
+        pending = []
+        for job in city_jobs:
+            done += 1
+            if store_path(job, prefix) in have:
+                summary['skipped'] += 1
+                continue
+            try:
+                content = fetch_station_year(session, job['year'], job['site_id'], freq)
+            except CpcbError as exc:
+                summary['failed'] += 1
+                log(f"  [{done}/{len(jobs)}] ! {job['filename']}: {exc}")
+                continue
+            if content is None:
+                # The manifest was built from file sizes, so a year can turn out empty
+                # after all; recording it is more useful than silently moving on.
+                summary['empty'] += 1
+                log(f"  [{done}/{len(jobs)}] - {job['filename']}: no readings")
+                continue
+            pending.append((job['filename'], content))
+            if len(pending) >= batch_size:
+                summary['uploaded'] += _flush(store, city, pending, prefix, log)
+                summary['commits'] += 1
+                pending = []
+            time.sleep(pause)
+        if pending:
+            summary['uploaded'] += _flush(store, city, pending, prefix, log)
+            summary['commits'] += 1
     return summary
