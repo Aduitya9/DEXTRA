@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import HAZARDOUS_AQI_THRESHOLD, TRAIN_END_DATE, VAL_END_DATE
+from src.config import (HAZARDOUS_AQI_THRESHOLD, SUPPORT_END_DATE, SUPPORT_START_DATE,
+                        TRAIN_END_DATE, VAL_END_DATE)
 from src.data import assemble, daily_cpcb, era5_features, fire_features
 
 
@@ -271,25 +272,52 @@ def _daily_frame(cities, start='2019-01-01', end='2025-12-31', aqi=120.0):
 def test_splits_never_share_a_city_or_a_date_range():
     daily = _daily_frame(['Delhi', 'Kanpur'])
     daily['split'] = assemble.assign_split(daily)
-    assert set(daily.loc[daily.city == 'Kanpur', 'split']) == {'test_unseen'}
 
     delhi = daily[daily.city == 'Delhi']
     assert delhi.loc[delhi.split == 'train', 'date'].max() <= pd.Timestamp(TRAIN_END_DATE)
     assert delhi.loc[delhi.split == 'val', 'date'].min() > pd.Timestamp(TRAIN_END_DATE)
     assert delhi.loc[delhi.split == 'val', 'date'].max() <= pd.Timestamp(VAL_END_DATE)
     assert delhi.loc[delhi.split == 'test_seen', 'date'].min() > pd.Timestamp(VAL_END_DATE)
+
+    kanpur = set(daily.loc[daily.city == 'Kanpur', 'split'])
+    assert kanpur == {'zeroshot_unseen', 'support_unseen', 'test_unseen'}
+    assert not kanpur & {'train', 'val', 'test_seen'}      # never trained or tuned on
     assert 'unassigned' not in set(daily['split'])
+
+
+def test_the_unseen_test_year_is_the_same_year_as_the_seen_one():
+    # Scored on different years, "what an unseen city costs" and "which year was
+    # dirtier" are mixed together and cannot be separated afterwards.
+    daily = _daily_frame(['Delhi', 'Kanpur'])
+    daily['split'] = assemble.assign_split(daily)
+    seen = daily.loc[daily.split == 'test_seen', 'date']
+    unseen = daily.loc[daily.split == 'test_unseen', 'date']
+    assert (seen.min(), seen.max()) == (unseen.min(), unseen.max())
+
+
+def test_every_unseen_city_gets_the_same_support_days():
+    # The old protocol gave each city its own first 30 days, which recorded when
+    # its pollution board installed the equipment rather than what the city is like.
+    daily = _daily_frame(['Kanpur', 'Patna', 'Bhopal'])
+    daily['split'] = assemble.assign_split(daily)
+    windows = (daily[daily.split == 'support_unseen']
+               .groupby('city')['date'].agg(['min', 'max', 'size']))
+
+    assert len(windows) == 3
+    assert windows['min'].nunique() == 1 and windows['max'].nunique() == 1
+    assert set(windows['size']) == {31}
 
 
 def test_unseen_city_static_features_see_only_the_support_window():
     daily = _daily_frame(['Delhi', 'Kanpur'])
-    # Kanpur's SO2 changes sharply after its first 30 days; the feature must not notice.
-    late = (daily.city == 'Kanpur') & (daily.date >= daily.date.min() + pd.Timedelta(days=30))
-    daily.loc[late, 'SO2'] = 500.0
+    # Kanpur's SO2 is wildly different outside the window; the feature must not notice.
+    outside = ~daily.date.between(SUPPORT_START_DATE, SUPPORT_END_DATE)
+    daily.loc[(daily.city == 'Kanpur') & outside, 'SO2'] = 500.0
 
-    static = assemble.city_static_features(daily, support_days=30).set_index('city')
-    assert static.loc['Kanpur', 'static_window_days'] == 30
-    assert static.loc['Kanpur', 'industrial_index'] == pytest.approx(0.25)   # 10/40, the early value
+    static = assemble.city_static_features(daily).set_index('city')
+
+    assert static.loc['Kanpur', 'static_window_days'] == 31
+    assert static.loc['Kanpur', 'industrial_index'] == pytest.approx(0.25)   # 10/40, inside
     assert static.loc['Delhi', 'static_window_days'] > 1800                  # full training period
 
 

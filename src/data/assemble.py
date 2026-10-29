@@ -24,6 +24,8 @@ from src.config import (
     METEO_FEATURES,
     MIN_EPISODE_DURATION_DAYS,
     POLLUTANTS,
+    SUPPORT_END_DATE,
+    SUPPORT_START_DATE,
     TARGET_CITIES,
     TEMPORAL_FEATURES,
     TEST_UNSEEN_CITIES,
@@ -34,7 +36,6 @@ from src.config import (
 from src.data.calendar_events import is_diwali, is_stubble_season
 
 ARCHETYPE_ID = {name: index for index, name in enumerate(ARCHETYPE_CLUSTERS)}
-DEFAULT_SUPPORT_DAYS = 30
 
 
 # --------------------------------------------------------------------------- merge
@@ -83,15 +84,21 @@ def add_calendar_features(daily):
 
 
 def city_static_features(daily, train_cities=None, train_end=TRAIN_END_DATE,
-                         support_days=DEFAULT_SUPPORT_DAYS):
+                         support_start=SUPPORT_START_DATE, support_end=SUPPORT_END_DATE):
     """Per-city static features, each computed only from data that city is allowed to see.
 
     Training cities may use the whole training period. Unseen cities may use only
-    their first `support_days` of real data, which is all the few-shot protocol gives
-    them; letting them use seven years would quietly undo the 30-day claim.
+    the support window, which is all the few-shot protocol gives them; letting them
+    use seven years would quietly undo the 30-day claim.
+
+    The window is the same calendar month for every unseen city. Taking each
+    city's own first 30 days instead made this feature a record of when its
+    pollution board installed the equipment: three of the five came online on
+    1 January 2019 and saw nothing but winter smog.
     """
     train_cities = set(train_cities or TRAIN_CITIES)
     train_end = pd.Timestamp(train_end)
+    support_start, support_end = pd.Timestamp(support_start), pd.Timestamp(support_end)
 
     rows = []
     for city, group in daily.groupby('city', sort=False):
@@ -99,9 +106,7 @@ def city_static_features(daily, train_cities=None, train_end=TRAIN_END_DATE,
         if city in train_cities:
             allowed = group[group['date'] <= train_end]
         else:
-            with_data = group[group['AQI'].notna()] if 'AQI' in group.columns else group
-            start = with_data['date'].min()
-            allowed = group if pd.isna(start) else group[group['date'] < start + pd.Timedelta(days=support_days)]
+            allowed = group[group['date'].between(support_start, support_end)]
 
         meta = TARGET_CITIES.get(city, {})
         ratio = np.nan
@@ -159,19 +164,42 @@ def extreme_episodes(daily, threshold=HAZARDOUS_AQI_THRESHOLD, min_days=MIN_EPIS
 
 
 def assign_split(daily, train_cities=None, unseen_cities=None,
-                 train_end=TRAIN_END_DATE, val_end=VAL_END_DATE):
-    """train / val / test_seen for the ten training cities, test_unseen for the other five."""
+                 train_end=TRAIN_END_DATE, val_end=VAL_END_DATE,
+                 support_start=SUPPORT_START_DATE, support_end=SUPPORT_END_DATE):
+    """Six labels: three years for the training cities, three roles for the unseen ones.
+
+        train / val / test_seen    ten training cities, 2019-2023 / 2024 / 2025
+        support_unseen             five unseen cities, the 31 days of December 2024
+        test_unseen                five unseen cities, 2025
+        zeroshot_unseen            five unseen cities, everything before the support window
+
+    test_unseen covers the same year as test_seen on purpose. Scoring the unseen
+    cities across all seven years instead would have mixed the question being
+    asked -- how much is lost on a city the model has never seen -- with the
+    question of which years were dirtier, and the two are not separable after
+    the fact.
+
+    zeroshot_unseen is held back rather than thrown away: it is six years of
+    cities the model never trains on, which is a second, weaker transfer number
+    for a city it cannot have adapted to, since that data precedes the support.
+    """
     train_cities = set(train_cities or TRAIN_CITIES)
     unseen_cities = set(unseen_cities or TEST_UNSEEN_CITIES)
     train_end, val_end = pd.Timestamp(train_end), pd.Timestamp(val_end)
+    support_start, support_end = pd.Timestamp(support_start), pd.Timestamp(support_end)
 
     split = pd.Series('unassigned', index=daily.index, dtype=object)
+    date = daily['date']
     is_unseen = daily['city'].isin(unseen_cities)
     is_train_city = daily['city'].isin(train_cities)
-    split[is_unseen] = 'test_unseen'
-    split[is_train_city & (daily['date'] <= train_end)] = 'train'
-    split[is_train_city & (daily['date'] > train_end) & (daily['date'] <= val_end)] = 'val'
-    split[is_train_city & (daily['date'] > val_end)] = 'test_seen'
+
+    split[is_train_city & (date <= train_end)] = 'train'
+    split[is_train_city & (date > train_end) & (date <= val_end)] = 'val'
+    split[is_train_city & (date > val_end)] = 'test_seen'
+
+    split[is_unseen] = 'zeroshot_unseen'
+    split[is_unseen & date.between(support_start, support_end)] = 'support_unseen'
+    split[is_unseen & (date > val_end)] = 'test_unseen'
     return split
 
 

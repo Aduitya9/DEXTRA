@@ -134,6 +134,22 @@ DATA_END_DATE = "2025-12-31"
 TRAIN_END_DATE = "2023-12-31"
 VAL_END_DATE = "2024-12-31"
 
+# The few-shot support window for the five unseen cities: the calendar month
+# before the year they are evaluated on, so every city gets the same 31 days.
+#
+# It replaces "the first 30 days this city ever reported", which turned out to
+# measure when each pollution board installed its equipment. Kanpur, Patna and
+# Varanasi all came online on 1 January 2019, in the middle of winter smog, so
+# their windows read 3.6x, 2.8x and 3.8x their true medians and held nothing but
+# days above AQI 200; Bhopal came online in September and read 0.92x. A model
+# adapting from those would have learned that Varanasi, the third cleanest of
+# the five, is catastrophic. On a fixed December window the spread across cities
+# falls from 4.2x to 2.3x, and what is left is real winter severity.
+SUPPORT_START_DATE = "2024-12-01"
+SUPPORT_END_DATE = "2024-12-31"
+assert SUPPORT_END_DATE == VAL_END_DATE, \
+    "The support window must end where the unseen evaluation year begins."
+
 # ---------------------------------------------------------------------------
 # External data retrieval
 # ---------------------------------------------------------------------------
