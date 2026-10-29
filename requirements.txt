@@ -14,3 +14,8 @@ cdsapi>=0.7.7
 huggingface_hub>=0.23.0
 openpyxl>=3.1.0
 pytest>=8.0.0
+
+# Modelling (notebooks 04 onward). Colab ships torch already; this line is for
+# running the tests locally, where the CPU build is enough:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2.0
