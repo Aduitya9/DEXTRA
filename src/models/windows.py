@@ -89,14 +89,20 @@ def make_supervised(daily, target=TARGET, lookback=LOOKBACK_WINDOW, horizon=FORE
     grouped_target = daily.groupby('city', sort=False)[target]
     grouped_split = daily.groupby('city', sort=False)['split'] if 'split' in daily.columns else None
 
+    last_day = daily['date'].max()
     frames = []
     for step in range(1, horizon + 1):
         frame = base.copy()
         frame['horizon'] = step
         frame['target_date'] = daily['date'] + pd.Timedelta(days=step)
-        frame['y'] = grouped_target.shift(-step).to_numpy()
+        # The final days of the record forecast into a year the data does not
+        # cover. Those rows have no answer and are not samples; dropping them
+        # here also keeps the calendar from being asked about a year it has
+        # no Diwali date for.
+        frame = frame[frame['target_date'] <= last_day]
+        frame['y'] = grouped_target.shift(-step).to_numpy()[frame.index]
         if grouped_split is not None:
-            frame['split'] = grouped_split.shift(-step).to_numpy()
+            frame['split'] = grouped_split.shift(-step).to_numpy()[frame.index]
         frames.append(pd.concat([frame, _calendar_at(frame['target_date'])], axis=1))
 
     out = pd.concat(frames, ignore_index=True)

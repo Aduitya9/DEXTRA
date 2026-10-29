@@ -40,9 +40,13 @@ GBM_SETTINGS = dict(
 )
 
 
-def clip_to_aqi_range(values, limits=AQI_RANGE):
-    """AQI is defined on 0-500; predictions outside it are not forecasts of anything."""
-    return pd.Series(values).clip(*limits)
+def clip_to_aqi_range(values, limits=AQI_RANGE, index=None):
+    """AQI is defined on 0-500; predictions outside it are not forecasts of anything.
+
+    The result carries the caller's index, so a prediction can never be silently
+    misaligned against the rows it was made for.
+    """
+    return pd.Series(values, index=index).clip(*limits)
 
 
 # --------------------------------------------------------------------------- persistence
@@ -50,7 +54,7 @@ def clip_to_aqi_range(values, limits=AQI_RANGE):
 
 def persistence(samples, target='AQI'):
     """Tomorrow, and the day after, look like today."""
-    return clip_to_aqi_range(samples[f'{target}_lag0'].to_numpy())
+    return clip_to_aqi_range(samples[f'{target}_lag0'].to_numpy(), index=samples.index)
 
 
 # --------------------------------------------------------------------------- climatology
@@ -94,7 +98,7 @@ class SeasonalClimatology:
             curve = self.by_city.get(city, self.pooled)
             values = curve[index[positions]]
             out[positions] = np.where(np.isfinite(values), values, self.pooled[index[positions]])
-        return clip_to_aqi_range(out)
+        return clip_to_aqi_range(out, index=samples.index)
 
 
 # --------------------------------------------------------------------------- gradient boosting
@@ -123,7 +127,7 @@ def predict_gradient_boosting(models, samples, features):
         model = models.get(int(horizon))
         if model is not None:
             out[positions] = model.predict(samples.iloc[positions][features])
-    return clip_to_aqi_range(out)
+    return clip_to_aqi_range(out, index=samples.index)
 
 
 # --------------------------------------------------------------------------- all together
@@ -134,8 +138,8 @@ def run_baselines(samples, features, train_split='train', truth='y'):
     out = samples.copy()
     train_rows = out[out['split'] == train_split]
 
-    out['persistence'] = persistence(out).to_numpy()
-    out['climatology'] = SeasonalClimatology().fit(train_rows, truth).predict(out).to_numpy()
+    out['persistence'] = persistence(out)
+    out['climatology'] = SeasonalClimatology().fit(train_rows, truth).predict(out)
     models = fit_gradient_boosting(train_rows, features, truth=truth)
-    out['gbm'] = predict_gradient_boosting(models, out, features).to_numpy()
+    out['gbm'] = predict_gradient_boosting(models, out, features)
     return out, models
