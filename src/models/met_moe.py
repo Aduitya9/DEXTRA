@@ -43,7 +43,25 @@ sign with a regime flag, so that it can only be solved by separating regimes:
 So the meteorological router's inputs are standardised once, with statistics
 from the training windows only, and those statistics travel inside the model as
 buffers: a saved Met-MoE needs nothing else to run, which matters for ONNX.
+
+Two training objectives, after Jacobs, Jordan, Nowlan and Hinton (1991),
+"Adaptive Mixtures of Local Experts":
+
+  cooperative  the mixture's forecast is scored, ||y - sum_k g_k e_k||^2. The
+               experts are free to become halves of one forecast that cancel
+               each other's errors. In a first one-seed run on the real data
+               each was worse alone than the even mix, and the router stayed
+               at 50/50, picking the more accurate expert on 50.6% of windows.
+               Kept as the ablation it is.
+  competitive  each expert is scored on its own forecast, weighted by how much
+               the router trusts it: -log sum_k g_k N(y; e_k, s^2), with the
+               spread s learned alongside. An expert is pushed to forecast the
+               windows it is given on its own, and the router to give each
+               window to the expert that forecasts it best. The forecast is
+               still the mixture's mean, so RMSE is measured the same way.
 """
+
+import math
 
 import numpy as np
 import torch
@@ -53,6 +71,10 @@ from src.config import GATE_FEATURES
 from src.models.itransformer import ITransformer
 
 ROUTERS = ('meteorological', 'learned', 'none')
+OBJECTIVES = ('cooperative', 'competitive')
+# Where the competitive objective's spread starts, in AQI points: about the size
+# of a day-ahead forecast error (the backbone's validation RMSE is 31.6).
+COMPETITIVE_SIGMA_INIT = 30.0
 # Counts that run from zero to thousands: logged before standardising, or a single
 # heavy fire day would set the router's whole scale.
 LOG_SCALED_GATE_FEATURES = {'fire_count_500km'}
@@ -89,15 +111,22 @@ def gate_statistics(X_train, indices, logged):
 class MetMoE(nn.Module):
     def __init__(self, n_variates, lookback, horizon, target_index, gate_indices, gate_logged,
                  router='meteorological', n_experts=2, d_model=128, n_heads=8, n_layers=2,
-                 dropout=0.3, router_hidden=32, gate_centre=None, gate_scale=None):
+                 dropout=0.3, router_hidden=32, gate_centre=None, gate_scale=None,
+                 objective='cooperative'):
         super().__init__()
         if router not in ROUTERS:
             raise ValueError(f"router must be one of {ROUTERS}, not {router!r}")
+        if objective not in OBJECTIVES:
+            raise ValueError(f"objective must be one of {OBJECTIVES}, not {objective!r}")
         if router == 'none':
+            if objective == 'competitive':
+                raise ValueError("a competitive objective needs experts to compete and a router to choose")
             n_experts = 1
         elif n_experts < 2:
             raise ValueError("a mixture needs at least two experts")
-        self.router_kind, self.n_experts = router, n_experts
+        self.router_kind, self.n_experts, self.objective = router, n_experts, objective
+        if objective == 'competitive':
+            self.log_sigma = nn.Parameter(torch.tensor(math.log(COMPETITIVE_SIGMA_INIT)))
         self.gate_indices, self.gate_logged = list(gate_indices), list(gate_logged)
 
         self.trunk = ITransformer(n_variates, lookback, horizon, target_index,
@@ -127,16 +156,24 @@ class MetMoE(nn.Module):
     def horizon(self):
         return self.trunk.horizon
 
-    def route(self, window, encoded):
-        """Mixture weights, (batch, experts), summing to one for every window."""
-        if self.router is None:
-            return torch.ones(window.shape[0], 1, device=window.device)
+    @property
+    def uses_own_loss(self):
+        """True when training must call training_loss instead of scoring forward()."""
+        return self.objective == 'competitive'
+
+    def _logits(self, window, encoded):
         if self.router_kind == 'meteorological':
             features = (gate_inputs(window, self.gate_indices, self.gate_logged)
                         - self.gate_centre) / self.gate_scale
         else:
             features = torch.cat([encoded[:, self.trunk.target_index, :], encoded.mean(dim=1)], dim=-1)
-        return torch.softmax(self.router(features), dim=-1)
+        return self.router(features)
+
+    def route(self, window, encoded):
+        """Mixture weights, (batch, experts), summing to one for every window."""
+        if self.router is None:
+            return torch.ones(window.shape[0], 1, device=window.device)
+        return torch.softmax(self._logits(window, encoded), dim=-1)
 
     def forward(self, window):
         """window: (batch, lookback, variates) -> (batch, horizon) in AQI points."""
@@ -147,6 +184,27 @@ class MetMoE(nn.Module):
         self._mean_weights = weights.mean(dim=0)
         mixed = (weights.unsqueeze(-1) * heads).sum(dim=1)
         return self.trunk.denormalise(mixed, centre, scale)
+
+    def training_loss(self, window, answer):
+        """The loss this model trains on, for a batch of windows and their answers.
+
+        Cooperative: squared error of the mixture's forecast, as for any model.
+        Competitive: -log sum_k g_k N(y; e_k, s^2 I) in AQI points, so that each
+        expert answers for its own forecast on the windows the router gives it.
+        It is never negative in practice -- that would need s below one AQI
+        point -- which keeps the balance penalty's relative weighting meaningful.
+        """
+        if self.objective == 'cooperative':
+            return nn.functional.mse_loss(self(window), answer)
+        encoded, centre, scale = self.trunk.encode(window)
+        log_weights = torch.log_softmax(self._logits(window, encoded), dim=-1)
+        self._mean_weights = log_weights.exp().mean(dim=0)
+        flat = self.expert_dropout(encoded.flatten(1))
+        forecasts = torch.stack([self.trunk.denormalise(expert(flat), centre, scale)
+                                 for expert in self.experts], dim=1)       # (batch, experts, horizon)
+        squared = ((forecasts - answer.unsqueeze(1)) ** 2).sum(dim=-1)
+        log_joint = log_weights - squared / (2 * torch.exp(2 * self.log_sigma))
+        return (answer.shape[-1] * self.log_sigma - torch.logsumexp(log_joint, dim=-1)).mean()
 
     def auxiliary_loss(self):
         """Balance penalty: 0 when the experts share the load, K-1 when one takes it all.
@@ -175,6 +233,28 @@ class MetMoE(nn.Module):
             encoded, _, _ = self.trunk.encode(batch)
             out.append(self.route(batch, encoded).cpu().numpy())
         return np.concatenate(out) if out else np.empty((0, self.n_experts), dtype=np.float32)
+
+    @torch.no_grad()
+    def expert_forecasts(self, X, device=None, batch_size=512):
+        """Every expert's forecast on its own, (windows, experts, horizon) in AQI points.
+
+        Set beside gate_weights, it shows whether the router knows which expert
+        to trust: on each window, did it lean towards the expert whose forecast
+        turned out the more accurate? An expert's error alone cannot answer that
+        -- cooperating halves are poor alone, and so are specialists scored on
+        each other's windows.
+        """
+        device = device or next(self.parameters()).device
+        self.eval()
+        out = []
+        for start in range(0, len(X), batch_size):
+            batch = torch.from_numpy(np.ascontiguousarray(X[start:start + batch_size])).to(device)
+            encoded, centre, scale = self.trunk.encode(batch)
+            flat = encoded.flatten(1)
+            out.append(torch.stack([self.trunk.denormalise(expert(flat), centre, scale)
+                                    for expert in self.experts], dim=1).cpu().numpy())
+        return (np.concatenate(out) if out
+                else np.empty((0, self.n_experts, self.horizon), dtype=np.float32))
 
 
 def regime_report(weights, index, daily, threshold=200.0):

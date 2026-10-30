@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 
@@ -19,13 +21,13 @@ def _windows(n=64, seed=0):
     return X
 
 
-def _model(router='meteorological', X=None, seed=0):
+def _model(router='meteorological', X=None, seed=0, objective='cooperative'):
     torch.manual_seed(seed)
     indices, logged = met_moe.gate_layout(VARIATES, GATE)
     centre, scale = met_moe.gate_statistics(_windows() if X is None else X, indices, logged)
     return met_moe.MetMoE(len(VARIATES), LOOKBACK, HORIZON, TARGET, indices, logged,
                           router=router, d_model=16, n_heads=2, n_layers=1, dropout=0.0,
-                          gate_centre=centre, gate_scale=scale).eval()
+                          gate_centre=centre, gate_scale=scale, objective=objective).eval()
 
 
 # --------------------------------------------------------------------------- shape and routing
@@ -88,7 +90,9 @@ def test_gate_features_missing_from_the_windows_are_refused():
 
 
 @pytest.mark.parametrize('kwargs, message', [({'router': 'random'}, 'router'),
-                                             ({'n_experts': 1}, 'two experts')])
+                                             ({'n_experts': 1}, 'two experts'),
+                                             ({'objective': 'greedy'}, 'objective'),
+                                             ({'router': 'none', 'objective': 'competitive'}, 'compete')])
 def test_a_misconfigured_mixture_is_refused(kwargs, message):
     indices, logged = met_moe.gate_layout(VARIATES, GATE)
     with pytest.raises(ValueError, match=message):
@@ -104,6 +108,74 @@ def test_the_balance_penalty_is_zero_when_shared_and_largest_when_one_expert_tak
     assert float(model.auxiliary_loss()) == pytest.approx(0.0, abs=1e-6)
     model._mean_weights = torch.tensor([1.0, 0.0])
     assert float(model.auxiliary_loss()) == pytest.approx(1.0, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- objectives
+
+def test_the_cooperative_objective_is_exactly_the_squared_error_training_always_used():
+    # Notebook 05's original variants must train bit for bit as they did before
+    # the competitive objective existed.
+    model = _model()
+    window = torch.from_numpy(_windows(8))
+    answer = 120 + 10 * torch.randn(8, HORIZON)
+    assert not model.uses_own_loss
+    assert torch.equal(model.training_loss(window, answer), torch.nn.MSELoss()(model(window), answer))
+
+
+def _trust(model, expert):
+    """Point the router firmly at one expert, whatever the window."""
+    with torch.no_grad():
+        model.router[-1].weight.zero_()
+        model.router[-1].bias.copy_(torch.tensor([10.0, -10.0] if expert == 0 else [-10.0, 10.0]))
+
+
+def test_the_competitive_objective_scores_each_expert_on_its_own_forecast():
+    """-log sum_k g_k N(y; e_k, s^2): when one expert has a window exactly right,
+    trusting it costs only the spread term, and trusting the other costs more."""
+    model = _model(objective='competitive')
+    with torch.no_grad():
+        model.experts[1].bias += 2.0                 # expert 1 forecasts ~30 AQI higher
+    X = _windows(8)
+    window, answer = torch.from_numpy(X), torch.from_numpy(model.expert_forecasts(X)[:, 0, :])
+
+    _trust(model, 0)
+    right = float(model.training_loss(window, answer).detach())
+    _trust(model, 1)
+    wrong = float(model.training_loss(window, answer).detach())
+    assert model.uses_own_loss
+    assert right == pytest.approx(HORIZON * math.log(met_moe.COMPETITIVE_SIGMA_INIT), abs=1e-3)
+    assert wrong > right + 0.5
+    # and the balance penalty still sees where the weight went
+    assert float(model.auxiliary_loss().detach()) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_each_expert_can_be_read_on_its_own_and_the_mixture_is_their_weighted_mean():
+    model = _model()
+    X = _windows(12)
+    alone, weights = model.expert_forecasts(X), model.gate_weights(X)
+    assert alone.shape == (12, 2, HORIZON)
+    assert np.allclose((weights[:, :, None] * alone).sum(axis=1), itransformer.predict(model, X), atol=1e-3)
+
+
+def test_competitive_and_cooperative_runs_can_never_resume_each_other():
+    loader = itransformer.make_loader(_windows(16), np.zeros((16, HORIZON), np.float32), 8)
+    signatures = [training.run_signature(_model(objective=o), loader, loader) for o in met_moe.OBJECTIVES]
+    assert signatures[0] != signatures[1]
+
+
+def test_a_competitive_mixture_trains_on_its_own_loss_and_is_judged_on_rmse():
+    X, y, _ = _regime_task(n=200)
+    model = _model(X=X[:160], objective='competitive').train()
+    spread = float(model.log_sigma.detach())
+    val_loader = itransformer.make_loader(X[160:], y[160:], 40)
+    _, history, outcome = training.train(
+        model, itransformer.make_loader(X[:160], y[:160], 32, shuffle=True), val_loader,
+        torch.device('cpu'), epochs=3, lr=3e-3, patience=10, aux_weight=0.01, log=lambda *a: None)
+    assert outcome == 'completed'
+    assert all('train_loss' in h and 'train_rmse' not in h for h in history)
+    assert float(model.log_sigma.detach()) != spread                       # the spread is learned too
+    assert min(h['val_rmse'] for h in history) == pytest.approx(
+        training._validation_rmse(model, val_loader, torch.device('cpu')), abs=1e-4)
 
 
 # --------------------------------------------------------------------------- the trunk's guarantees still hold
@@ -155,26 +227,49 @@ def _regime_task(seed=1, n=600):
     return X, y, regime
 
 
-def _regime_split(router):
+def _regime_model(router, objective='cooperative'):
     X, y, regime = _regime_task()
-    model = _model(router, X=X[:480]).train()
+    model = _model(router, X=X[:480], objective=objective).train()
     itransformer.set_seed(0)
     torch.manual_seed(0)
     training.train(model, itransformer.make_loader(X[:480], y[:480], 64, shuffle=True),
                    itransformer.make_loader(X[480:], y[480:], 120), torch.device('cpu'),
                    epochs=60, lr=3e-3, patience=60, aux_weight=0.01, log=lambda *a: None)
+    return model, X, y, regime
+
+
+def _regime_split(router, objective='cooperative'):
+    model, X, _, regime = _regime_model(router, objective)
     weights = model.gate_weights(X)
     return abs(weights[regime == 1, 0].mean() - weights[regime == 0, 0].mean())
 
 
-def test_given_two_regimes_the_physics_router_sends_them_to_different_experts():
-    split = _regime_split('meteorological')
+@pytest.mark.parametrize('objective', met_moe.OBJECTIVES)
+def test_given_two_regimes_the_physics_router_sends_them_to_different_experts(objective):
+    split = _regime_split('meteorological', objective)
     assert split > 0.8, f"physics router did not separate the regimes (split {split:.2f})"
 
 
-def test_the_learned_router_cannot_find_a_regime_the_trunk_never_sees():
+@pytest.mark.parametrize('objective', met_moe.OBJECTIVES)
+def test_the_learned_router_cannot_find_a_regime_the_trunk_never_sees(objective):
     """The 'w/o Met Gating' ablation, in miniature: same experts, same training,
     but routing on the trunk's own standardised encoding. The regime is in how
-    strong the inversion is, and that level never reaches the encoding."""
-    split = _regime_split('learned')
+    strong the inversion is, and that level never reaches the encoding -- under
+    either objective, since no loss can route on what the router cannot see."""
+    split = _regime_split('learned', objective)
     assert split < 0.2, f"learned router separated a regime it should not see (split {split:.2f})"
+
+
+def test_under_competition_each_regime_gets_a_whole_forecaster_of_its_own():
+    """What the competitive objective is for: the expert a regime is routed to
+    forecasts that regime about as well on its own as the whole mixture does."""
+    model, X, y, regime = _regime_model('meteorological', 'competitive')
+    held_out = slice(480, None)
+    X, y, regime = X[held_out], y[held_out], regime[held_out]
+    weights, alone = model.gate_weights(X), model.expert_forecasts(X)
+    mixture = itransformer.predict(model, X)
+    for value in (0, 1):
+        days = regime == value
+        mine = int(np.argmax(weights[days].mean(axis=0)))
+        rmse = lambda forecast: float(np.sqrt(np.mean((forecast[days] - y[days]) ** 2)))
+        assert rmse(alone[:, mine]) <= 1.1 * rmse(mixture) + 0.5, (value, rmse(alone[:, mine]), rmse(mixture))

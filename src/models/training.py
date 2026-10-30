@@ -148,12 +148,20 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
     the notebooks, through RunRegistry -- turns it off: the run's result and
     weights already go up in one commit, and a finished checkpoint would be a
     second commit of several megabytes of optimiser state nobody reads.
+
+    A model whose objective is not squared error on its forecast -- the
+    Met-MoE's competitive mixture, which says so through `uses_own_loss` --
+    trains on its own `training_loss`, and its curve records that loss as
+    'train_loss'. Validation, early stopping and the weights handed back are
+    judged exactly as for any other model: on the forecast's RMSE in AQI points.
     """
     model.to(device)
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=epochs)
     criterion = nn.MSELoss()
     has_aux = aux_weight > 0 and callable(getattr(model, 'auxiliary_loss', None))
+    own_loss = model.training_loss if getattr(model, 'uses_own_loss', False) else None
+    train_label = 'train_loss' if own_loss else 'train_rmse'
 
     start_epoch, history = 1, []
     best = {'rmse': float('inf'), 'epoch': 0, 'state': copy.deepcopy(model.state_dict())}
@@ -194,9 +202,11 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
         for window, answer in train_loader:
             window, answer = window.to(device), answer.to(device)
             optimiser.zero_grad(set_to_none=True)
-            loss = criterion(model(window), answer)
+            loss = own_loss(window, answer) if own_loss else criterion(model(window), answer)
             if has_aux:
-                loss = loss + aux_weight * loss.detach() * model.auxiliary_loss()
+                # abs: a likelihood objective could in principle dip below zero, and a
+                # negative scale would turn the balance penalty into a reward.
+                loss = loss + aux_weight * loss.detach().abs() * model.auxiliary_loss()
             if not torch.isfinite(loss):
                 diverged = True
                 break
@@ -213,13 +223,14 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
         schedule.step()
 
         val_rmse = _validation_rmse(model, val_loader, device)
-        history.append({'epoch': epoch, 'train_rmse': float(np.sqrt(running / max(seen, 1))),
+        mean_loss = running / max(seen, 1)
+        history.append({'epoch': epoch, train_label: float(mean_loss if own_loss else np.sqrt(mean_loss)),
                         'val_rmse': val_rmse})
         improved = val_rmse < best['rmse'] - 1e-4
         if improved:
             best = {'rmse': val_rmse, 'epoch': epoch, 'state': copy.deepcopy(model.state_dict())}
         if improved or epoch % 5 == 0:
-            log(f"  epoch {epoch:>3}  train rmse {history[-1]['train_rmse']:7.3f}  "
+            log(f"  epoch {epoch:>3}  {train_label.replace('_', ' ')} {history[-1][train_label]:7.3f}  "
                 f"val rmse {val_rmse:7.3f}" + ("  <- best" if improved else ""))
         if not improved and epoch - best['epoch'] >= patience:
             outcome = 'early_stopped'
