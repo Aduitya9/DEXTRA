@@ -92,3 +92,68 @@ def test_store_tracks_uploads_for_resume():
     assert store.exists('raw/firms/modis_2020.parquet')
     assert api.uploads == ['raw/firms/modis_2020.parquet']
     assert store.files('raw/firms/') == ['raw/firms/modis_2019.parquet', 'raw/firms/modis_2020.parquet']
+
+
+class _HubError(Exception):
+    """An HTTP error as any client library reports one: with the response attached."""
+
+    def __init__(self, status):
+        super().__init__(f"HTTP {status}")
+        self.response = type('Response', (), {'status_code': status})()
+
+
+class _FlakyApi(_FakeApi):
+    def __init__(self, error, failures):
+        super().__init__()
+        self.error, self.failures, self.attempts = error, failures, 0
+
+    def upload_file(self, **kwargs):
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise self.error
+        super().upload_file(**kwargs)
+
+
+@pytest.mark.parametrize('error', [_HubError(503), _HubError(429), ConnectionError('reset by peer')],
+                         ids=['server hiccup', 'rate limited', 'connection dropped'])
+def test_a_hub_hiccup_is_retried_rather_than_losing_the_write(error):
+    api = _FlakyApi(error, failures=2)
+    store = HFStore('someone/dextra', token='t', api=api, backoff=0)
+    store.upload_json({'val_rmse': 31.4}, 'runs/05/x.json', 'msg')
+    assert api.attempts == 3
+    assert store.exists('runs/05/x.json')
+
+
+@pytest.mark.parametrize('error', [_HubError(401), _HubError(404), TypeError('bug'),
+                                   FileNotFoundError('no such local file')],
+                         ids=['bad token', 'not found', 'bug', 'missing file'])
+def test_a_mistake_fails_at_once_instead_of_being_retried(error):
+    api = _FlakyApi(error, failures=1)
+    store = HFStore('someone/dextra', token='t', api=api, backoff=0)
+    with pytest.raises(type(error)):
+        store.upload_json({'val_rmse': 31.4}, 'runs/05/x.json', 'msg')
+    assert api.attempts == 1
+
+
+def test_a_download_dropped_midway_is_retried_too(monkeypatch, tmp_path):
+    # huggingface_hub reports a connection lost mid-download as a FileNotFoundError
+    # raised from the network error, so it is the cause that decides.
+    from src.utils import hf_store
+
+    local = tmp_path / 'x.json'
+    local.write_text('{"val_rmse": 31.4}')
+    calls = []
+
+    def flaky_download(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            try:
+                raise ConnectionError('reset by peer')
+            except ConnectionError as network:
+                raise FileNotFoundError('cannot find the requested file in the local cache') from network
+        return str(local)
+
+    monkeypatch.setattr(hf_store, 'hf_hub_download', flaky_download)
+    store = HFStore('someone/dextra', token='t', api=_FakeApi(files=['runs/05/x.json']), backoff=0)
+    assert store.read_json('runs/05/x.json') == {'val_rmse': 31.4}
+    assert len(calls) == 2 and all(c['force_download'] for c in calls)

@@ -164,3 +164,25 @@ def test_local_store_stands_in_for_the_hugging_face_one(tmp_path):
     again = download_cpcb.download_manifest(
         _manifest(), store, session=FakeSession(), pause=0, prefix="", log=lambda *a: None)
     assert again['skipped'] == 3 and again['uploaded'] == 0
+
+
+def test_local_store_offers_everything_the_notebooks_ask_of_the_hugging_face_one(tmp_path):
+    import inspect
+    from src.utils.hf_store import HFStore
+    from src.utils.local_store import LocalStore
+
+    used = {'exists', 'files', 'refresh', 'read_df', 'upload_df', 'read_json', 'upload_json',
+            'read_bytes', 'upload_file', 'upload_folder'}
+    hf = {n for n, _ in inspect.getmembers(HFStore, inspect.isfunction)}
+    local = {n for n, _ in inspect.getmembers(LocalStore, inspect.isfunction)}
+    assert used <= hf, used - hf
+    assert used <= local, used - local
+
+    store = LocalStore(tmp_path)
+    frame = pd.DataFrame({'a': [1, 2]})
+    store.upload_df(frame, 'x/t.parquet', 'msg')
+    store.upload_df(frame, 'x/t.csv', 'msg')
+    assert store.read_df('x/t.parquet').equals(frame)
+    assert store.read_df('x/t.csv').equals(frame)
+    assert store.files('x/') == ['x/t.csv', 'x/t.parquet']
+

@@ -21,7 +21,6 @@ without any global scaler being fitted, and a city the model has never seen need
 no statistics of its own.
 """
 
-import copy
 
 import numpy as np
 import torch
@@ -63,6 +62,19 @@ class ITransformer(nn.Module):
 
     def forward(self, window):
         """window: (batch, lookback, variates) -> (batch, horizon) in AQI points."""
+        encoded, centre, scale = self.encode(window)
+        forecast = self.project(encoded)                       # (batch, variates, horizon)
+        return self.denormalise(forecast[:, self.target_index, :], centre, scale)
+
+    def encode(self, window):
+        """The shared trunk: per-window standardisation, then attention across variates.
+
+        Returns the encoded variate tokens (batch, variates, d_model) and the centre
+        and scale needed to put a forecast back into AQI points. Split out from
+        forward so heads other than this model's own -- the Met-MoE experts -- can
+        sit on the same trunk. Nothing here owns parameters that forward does not,
+        so a checkpoint saved before the split loads unchanged.
+        """
         mean = window.mean(dim=1, keepdim=True)
         spread = window.std(dim=1, keepdim=True, unbiased=False)
 
@@ -79,13 +91,13 @@ class ITransformer(nn.Module):
         standardised = (window - centre) / scale
 
         tokens = self.embed(standardised.permute(0, 2, 1))     # (batch, variates, d_model)
-        encoded = self.norm(self.encoder(tokens))
-        forecast = self.project(encoded)                       # (batch, variates, horizon)
+        return self.norm(self.encoder(tokens)), centre, scale
 
-        target = forecast[:, self.target_index, :]
+    def denormalise(self, target, centre, scale):
+        """A forecast made in the target's standardised units, back into AQI points."""
         target_centre = centre[:, 0, self.target_index].unsqueeze(-1)
         target_scale = scale[:, 0, self.target_index].unsqueeze(-1)
-        return target * target_scale + target_centre           # back into AQI points
+        return target * target_scale + target_centre
 
 
 def count_parameters(model):
@@ -110,65 +122,22 @@ def predict(model, X, device=None, batch_size=512):
     return np.concatenate(out) if out else np.empty((0, model.horizon), dtype=np.float32)
 
 
-def _rmse(model, loader, device):
-    model.eval()
-    total, count = 0.0, 0
-    with torch.no_grad():
-        for window, answer in loader:
-            error = model(window.to(device)) - answer.to(device)
-            total += float((error ** 2).sum())
-            count += answer.numel()
-    return float(np.sqrt(total / max(count, 1)))
-
-
 def train(model, train_loader, val_loader, device, epochs=60, lr=3e-4,
           weight_decay=1e-4, patience=8, clip=1.0, log=print):
     """Fit on the training split, stop on validation RMSE, keep the best weights.
 
+    Kept with notebook 04's signature; the loop itself is src.models.training.train,
+    which adds resuming, a divergence guard and a time budget, so there is one
+    training loop in the project rather than two drifting apart.
+
     The loss is plain mean squared error on AQI points. Weighting it towards
     hazardous days would help the number this project cares about, and that is
-    exactly why it is not done here: this notebook has to answer whether the
-    architecture earns its place, and a loss change would answer a different
-    question at the same time. Rare-event handling arrives with C-STDA, where it
-    can be measured on its own.
+    exactly why it is not done here: notebook 04 asks whether the architecture
+    earns its place, and a loss change would answer a different question at the
+    same time. Rare-event handling arrives with C-STDA, measured on its own.
     """
-    model.to(device)
-    optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, T_max=epochs)
-    criterion = nn.MSELoss()
-
-    best = {'rmse': float('inf'), 'epoch': -1, 'state': copy.deepcopy(model.state_dict())}
-    history = []
-    for epoch in range(1, epochs + 1):
-        model.train()
-        running, seen = 0.0, 0
-        for window, answer in train_loader:
-            window, answer = window.to(device), answer.to(device)
-            optimiser.zero_grad(set_to_none=True)
-            loss = criterion(model(window), answer)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), clip)
-            optimiser.step()
-            running += float(loss.detach()) * len(answer)
-            seen += len(answer)
-        schedule.step()
-
-        val_rmse = _rmse(model, val_loader, device)
-        history.append({'epoch': epoch, 'train_rmse': float(np.sqrt(running / max(seen, 1))),
-                        'val_rmse': val_rmse})
-        if val_rmse < best['rmse'] - 1e-4:
-            best = {'rmse': val_rmse, 'epoch': epoch, 'state': copy.deepcopy(model.state_dict())}
-            marker = '  <- best'
-        elif epoch - best['epoch'] >= patience:
-            log(f"  epoch {epoch:>3}  val rmse {val_rmse:7.3f}   stopping: "
-                f"{patience} epochs without improvement")
-            break
-        else:
-            marker = ''
-        if epoch % 5 == 0 or marker:
-            log(f"  epoch {epoch:>3}  train rmse {history[-1]['train_rmse']:7.3f}  "
-                f"val rmse {val_rmse:7.3f}{marker}")
-
-    model.load_state_dict(best['state'])
-    log(f"  best epoch {best['epoch']}, val rmse {best['rmse']:.3f}")
+    from src.models import training
+    model, history, _ = training.train(
+        model, train_loader, val_loader, device, epochs=epochs, lr=lr,
+        weight_decay=weight_decay, patience=patience, clip=clip, log=log)
     return model, history
