@@ -308,6 +308,30 @@ def test_every_unseen_city_gets_the_same_support_days():
     assert set(windows['size']) == {31}
 
 
+def test_a_leave_one_out_fold_never_trains_or_tunes_on_its_held_out_city():
+    daily = _daily_frame(['Delhi', 'Kanpur', 'Patna'])
+    split = assemble.leave_one_out_split(daily, 'Delhi')
+
+    delhi = daily.city == 'Delhi'
+    assert set(split[delhi]) == {'unused', 'test_loco'}
+    tested = daily.loc[delhi & (split == 'test_loco'), 'date']
+    assert tested.min() > pd.Timestamp(TRAIN_END_DATE)
+    assert sorted(tested.dt.year.unique()) == [2024, 2025]          # two winters, not one
+
+    assert set(split[~delhi]) == {'train', 'val', 'unused'}
+    assert daily.loc[~delhi & (split == 'train'), 'date'].max() <= pd.Timestamp(TRAIN_END_DATE)
+    assert sorted(daily.loc[~delhi & (split == 'val'), 'date'].dt.year.unique()) == [2024]
+
+
+def test_every_city_is_held_out_once_whatever_its_role_in_the_main_split():
+    daily = _daily_frame(['Delhi', 'Kanpur'])          # Kanpur is an unseen city in the main split
+    for city in ('Delhi', 'Kanpur'):
+        split = assemble.leave_one_out_split(daily, city)
+        assert (split[daily.city == city] == 'test_loco').sum() == 366 + 365
+    with pytest.raises(ValueError, match='Mumbai'):
+        assemble.leave_one_out_split(daily, 'Mumbai')
+
+
 def test_unseen_city_static_features_see_only_the_support_window():
     daily = _daily_frame(['Delhi', 'Kanpur'])
     # Kanpur's SO2 is wildly different outside the window; the feature must not notice.

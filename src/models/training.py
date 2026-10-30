@@ -128,7 +128,7 @@ def _validation_rmse(model, loader, device):
 
 def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_decay=1e-3,
           patience=10, clip=1.0, aux_weight=0.0, checkpointer=None, deadline=None,
-          save_finished=True, log=print):
+          save_finished=True, log=print, score=None):
     """Fit on the training split, stop on validation RMSE, return the best weights.
 
     Returns (model, history, outcome), with outcome one of OUTCOMES.
@@ -154,6 +154,11 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
     trains on its own `training_loss`, and its curve records that loss as
     'train_loss'. Validation, early stopping and the weights handed back are
     judged exactly as for any other model: on the forecast's RMSE in AQI points.
+
+    `score(model, val_loader, device)`, lower is better, replaces that RMSE as
+    what early stopping minimises, and is recorded as 'val_score'. A forecast
+    trained for the 90th percentile is meant to sit above the truth, so RMSE
+    would pick the epoch where it sits least high -- the opposite of its job.
     """
     model.to(device)
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -162,12 +167,16 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
     has_aux = aux_weight > 0 and callable(getattr(model, 'auxiliary_loss', None))
     own_loss = model.training_loss if getattr(model, 'uses_own_loss', False) else None
     train_label = 'train_loss' if own_loss else 'train_rmse'
+    score = score or _validation_rmse
+    metric = 'val_rmse' if score is _validation_rmse else 'val_score'
 
     start_epoch, history = 1, []
     best = {'rmse': float('inf'), 'epoch': 0, 'state': copy.deepcopy(model.state_dict())}
     signature = run_signature(model, train_loader, val_loader, epochs=epochs, lr=lr,
                               weight_decay=weight_decay, patience=patience, clip=clip,
                               aux_weight=aux_weight)
+    if metric == 'val_score':
+        signature['score'] = getattr(score, '__name__', 'custom')
     saved = checkpointer.load() if checkpointer else None
     if saved is not None and saved.get('signature') != signature:
         log("  a checkpoint exists for this run, but from other settings or data; starting afresh")
@@ -222,16 +231,16 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
             break
         schedule.step()
 
-        val_rmse = _validation_rmse(model, val_loader, device)
+        val_rmse = score(model, val_loader, device)
         mean_loss = running / max(seen, 1)
         history.append({'epoch': epoch, train_label: float(mean_loss if own_loss else np.sqrt(mean_loss)),
-                        'val_rmse': val_rmse})
+                        metric: val_rmse})
         improved = val_rmse < best['rmse'] - 1e-4
         if improved:
             best = {'rmse': val_rmse, 'epoch': epoch, 'state': copy.deepcopy(model.state_dict())}
         if improved or epoch % 5 == 0:
             log(f"  epoch {epoch:>3}  {train_label.replace('_', ' ')} {history[-1][train_label]:7.3f}  "
-                f"val rmse {val_rmse:7.3f}" + ("  <- best" if improved else ""))
+                f"{metric.replace('_', ' ')} {val_rmse:7.3f}" + ("  <- best" if improved else ""))
         if not improved and epoch - best['epoch'] >= patience:
             outcome = 'early_stopped'
             log(f"  epoch {epoch:>3}  stopping: {patience} epochs without improvement")
@@ -247,7 +256,7 @@ def train(model, train_loader, val_loader, device, epochs=30, lr=3e-4, weight_de
 
     model.load_state_dict(best['state'])
     if math.isfinite(best['rmse']):
-        log(f"  best epoch {best['epoch']}, val rmse {best['rmse']:.3f}  ({outcome})")
+        log(f"  best epoch {best['epoch']}, {metric.replace('_', ' ')} {best['rmse']:.3f}  ({outcome})")
     return model, history, outcome
 
 

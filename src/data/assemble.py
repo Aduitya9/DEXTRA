@@ -203,6 +203,32 @@ def assign_split(daily, train_cities=None, unseen_cities=None,
     return split
 
 
+def leave_one_out_split(daily, held_out, train_end=TRAIN_END_DATE, val_end=VAL_END_DATE):
+    """Split labels for one leave-one-city-out fold, over all fifteen cities.
+
+        train      every other city, through train_end (2019-2023)
+        val        every other city, the year after (2024): early stopping, alarm levels
+        test_loco  the held-out city, everything after train_end (2024-2025)
+        unused     the held-out city's earlier years, and the other cities' 2025
+
+    The main split tests transfer on five fixed cities, and their 2025 holds about
+    forty severe days -- too few to rest a claim on. Holding out each city in turn
+    makes every city an unseen one once, and scoring two years instead of one
+    gives each held-out city two winters. The held-out city contributes nothing
+    to training, validation, gap-filling medians or alarm levels; its own history
+    reaches a forecast only as the input a forecaster would really have.
+    """
+    if held_out not in set(daily['city']):
+        raise ValueError(f"{held_out!r} is not a city in the table")
+    train_end, val_end = pd.Timestamp(train_end), pd.Timestamp(val_end)
+    split = pd.Series('unused', index=daily.index, dtype=object)
+    others = daily['city'] != held_out
+    split[others & (daily['date'] <= train_end)] = 'train'
+    split[others & (daily['date'] > train_end) & (daily['date'] <= val_end)] = 'val'
+    split[~others & (daily['date'] > train_end)] = 'test_loco'
+    return split
+
+
 # --------------------------------------------------------------------------- normalisation
 
 
