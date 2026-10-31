@@ -67,6 +67,41 @@ def test_seeds_are_averaged_and_their_spread_kept():
     assert pooled['plain'].hits.tolist() == [5.0]
 
 
+def _ranked(n_cities=6, seed=0):
+    """Cities whose severe days a sharp forecast ranks perfectly and a blurred one only roughly."""
+    rng = np.random.default_rng(seed)
+    parts = []
+    for c in range(n_cities):
+        y = np.concatenate([rng.uniform(310, 400, 15), rng.uniform(50, 290, 185)])
+        parts.append(pd.DataFrame({'city': f'c{c}', 'y': y, 'sharp_seed1': y + rng.normal(0, 5, 200),
+                                   'sharp_seed2': y + rng.normal(0, 5, 200), 'blurred': y + rng.normal(0, 90, 200)}))
+    return pd.concat(parts, ignore_index=True)
+
+
+def test_average_precision_ranks_without_any_alarm_level():
+    frame = _ranked()
+    sharp = gap.average_precision(frame, ['sharp_seed1', 'sharp_seed2'])
+    assert sharp == pytest.approx(1.0, abs=0.02)
+    assert gap.average_precision(frame, ['blurred']) < sharp
+    assert gap.average_precision(frame.assign(sharp_seed1=frame.sharp_seed1 - 200), ['sharp_seed1']) == \
+        pytest.approx(gap.average_precision(frame, ['sharp_seed1']))      # a shift changes nothing
+    assert np.isnan(gap.average_precision(frame.assign(y=100.0), ['blurred']))
+
+
+def test_a_paired_ap_difference_has_an_interval_and_a_p_value():
+    frame = _ranked()
+    point, low, high, p = gap.paired_ap_difference(frame, ['sharp_seed1', 'sharp_seed2'], ['blurred'], draws=300)
+    assert point > 0 and 0 < low <= point <= high and p < 0.01
+    assert p == pytest.approx(2 / 301)                  # every resample agrees, yet p is never 0
+    same = gap.paired_ap_difference(frame, ['blurred'], ['blurred'], draws=100)
+    assert same[0] == 0.0 and same[3] == 1.0
+
+
+def test_holm_scales_the_smallest_p_most_and_never_reorders():
+    assert gap.holm([0.01, 0.04, 0.03]).tolist() == pytest.approx([0.03, 0.06, 0.06])
+    assert gap.holm([0.5]).tolist() == [0.5]
+
+
 def test_a_paired_difference_resamples_the_same_cities_for_both():
     a = pd.DataFrame({'city': list('ABCD'), 'hits': [8.0, 6, 9, 7], 'severe': [10.0] * 4, 'raised': [9.0] * 4})
     b = a.assign(hits=a.hits - 3)
