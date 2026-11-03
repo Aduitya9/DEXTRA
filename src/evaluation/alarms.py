@@ -24,6 +24,9 @@ from src.config import RARE_AQI_THRESHOLD
 # reaches well above 300 as well as below: a forecast trained or read at its 90th
 # percentile is meant to sit high, and its best alarm sits high with it.
 ALARM_LEVELS = np.arange(150.0, 452.0, 2.0)
+# The adaptive alarm aims to miss 30% of severe days; the step is chosen on validation rows.
+MISS_RATE = 0.3
+ADAPTIVE_STEPS = (5.0, 10.0, 20.0, 40.0)
 
 
 def alarm_scores(truth, forecast, level=RARE_AQI_THRESHOLD, threshold=RARE_AQI_THRESHOLD):
@@ -54,6 +57,60 @@ def tune_alarm(truth, forecast, levels=ALARM_LEVELS, threshold=RARE_AQI_THRESHOL
     f1 = np.nan_to_num(f1, nan=-1.0)
     tied = levels[f1 == f1.max()]
     return float(tied[np.argmin(np.abs(tied - threshold))])
+
+
+def recall_level(truth, forecast, miss_rate=MISS_RATE, threshold=RARE_AQI_THRESHOLD):
+    """The level that would have flagged all but `miss_rate` of the severe days given.
+
+    Fitted on validation rows of other cities, it is where a new city's alarm starts.
+    """
+    truth, forecast = np.asarray(truth, dtype=float), np.asarray(forecast, dtype=float)
+    severe = (truth > threshold) & np.isfinite(forecast)
+    return float(np.quantile(forecast[severe], miss_rate)) if severe.any() else float(threshold)
+
+
+def adaptive_alarm(truth, forecast, start, step, miss_rate=MISS_RATE, delay=1, threshold=RARE_AQI_THRESHOLD):
+    """One city's alarms day by day, the level moved only by outcomes already known.
+
+    Adaptive conformal inference (Gibbs and Candes, NeurIPS 2021) applied to the alarm:
+    a severe day that was missed lowers the level by step * (1 - miss_rate), one that was
+    caught raises it by step * miss_rate, so over any sequence the share of severe days
+    missed tends to miss_rate, whatever the city and however its forecasts are biased. An
+    outcome only moves the level `delay` days after the forecast was issued, because that
+    is when it is known. Days must be in order. Returns a boolean array of alarms.
+    """
+    truth, forecast = np.asarray(truth, dtype=float), np.asarray(forecast, dtype=float)
+    pending = np.zeros(len(forecast) + delay + 1)
+    level, raised = float(start), np.zeros(len(forecast), dtype=bool)
+    for day in range(len(forecast)):
+        level += pending[day]
+        raised[day] = forecast[day] > level
+        if truth[day] > threshold:
+            pending[day + delay] += step * miss_rate if raised[day] else -step * (1 - miss_rate)
+    return raised
+
+
+def choose_step(cities, truth, forecast, start, steps=ADAPTIVE_STEPS, miss_rate=MISS_RATE, delay=1,
+                threshold=RARE_AQI_THRESHOLD, enough=5, tolerance=0.1):
+    """The smallest step whose per-city recall lands within `tolerance` of the target, on the rows given.
+
+    Larger steps track the target more tightly and cost more false alarms, so the
+    smallest that is good enough wins; if none is, the one that comes closest. Days must
+    be in order within each city, and these are validation rows, never test.
+    """
+    cities, truth, forecast = np.asarray(cities), np.asarray(truth, dtype=float), np.asarray(forecast, dtype=float)
+    errors = []
+    for step in steps:
+        recalls = []
+        for city in np.unique(cities):
+            mine = cities == city
+            if (truth[mine] > threshold).sum() < enough:
+                continue
+            flags = adaptive_alarm(truth[mine], forecast[mine], start, step, miss_rate, delay, threshold)
+            recalls.append(flags[truth[mine] > threshold].mean())
+        errors.append(float(np.mean(np.abs(np.asarray(recalls) - (1 - miss_rate)))) if recalls else np.inf)
+    good = [step for step, error in zip(steps, errors) if error <= tolerance]
+    return float(good[0]) if good else float(steps[int(np.argmin(errors))])
 
 
 def severe_bias(truth, forecast, threshold=RARE_AQI_THRESHOLD):

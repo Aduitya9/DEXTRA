@@ -43,6 +43,25 @@ def pick_device(prefer_gpu=True):
     return torch.device('cuda' if prefer_gpu and torch.cuda.is_available() else 'cpu')
 
 
+def window_scale(window):
+    """Per-window centre and scale of each variate, (batch, 1, variates) each.
+
+    A variate that does not move inside the window is passed through at its own
+    value instead of being standardised. Subtracting its mean would leave exactly
+    zero, and three of the twenty-six -- archetype_id, coastal_flag and
+    industrial_index -- never move, so the features that say which kind of city
+    this is would reach the model as nothing at all. It costs the calendar flags
+    too: a fortnight wholly inside the stubble season is otherwise
+    indistinguishable from a fortnight wholly outside it.
+    """
+    mean = window.mean(dim=1, keepdim=True)
+    spread = window.std(dim=1, keepdim=True, unbiased=False)
+    moves = spread > CONSTANT_TOLERANCE
+    centre = torch.where(moves, mean, torch.zeros_like(mean))
+    scale = torch.where(moves, spread + EPSILON, torch.ones_like(spread))
+    return centre, scale
+
+
 class ITransformer(nn.Module):
     def __init__(self, n_variates, lookback, horizon, target_index,
                  d_model=128, n_heads=8, n_layers=2, dropout=0.1):
@@ -75,19 +94,7 @@ class ITransformer(nn.Module):
         sit on the same trunk. Nothing here owns parameters that forward does not,
         so a checkpoint saved before the split loads unchanged.
         """
-        mean = window.mean(dim=1, keepdim=True)
-        spread = window.std(dim=1, keepdim=True, unbiased=False)
-
-        # A variate that does not move inside the window is passed through at its
-        # own value instead of being standardised. Subtracting its mean would
-        # leave exactly zero, and three of the twenty-six -- archetype_id,
-        # coastal_flag and industrial_index -- never move, so the features that
-        # say which kind of city this is would reach the model as nothing at all.
-        # It costs the calendar flags too: a fortnight wholly inside the stubble
-        # season is otherwise indistinguishable from a fortnight wholly outside it.
-        moves = spread > CONSTANT_TOLERANCE
-        centre = torch.where(moves, mean, torch.zeros_like(mean))
-        scale = torch.where(moves, spread + EPSILON, torch.ones_like(spread))
+        centre, scale = window_scale(window)
         standardised = (window - centre) / scale
 
         tokens = self.embed(standardised.permute(0, 2, 1))     # (batch, variates, d_model)

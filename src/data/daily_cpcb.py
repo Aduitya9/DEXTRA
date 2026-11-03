@@ -62,6 +62,20 @@ def drop_inconsistent_pm(daily, min_ratio=MIN_PM25_PM10_RATIO):
     return out
 
 
+def blank_contradicted_pm(hourly, min_ratio=MIN_PM25_PM10_RATIO):
+    """One station's hourly frame, with both PM channels blanked on days they contradict each other."""
+    present = [p for p in ('PM2.5', 'PM10') if p in hourly.columns]
+    if len(present) < 2:
+        return hourly
+    out = hourly.sort_values('timestamp').reset_index(drop=True)
+    dates = out['timestamp'].dt.normalize()
+    daily = out.groupby(dates)[present].mean()
+    cleaned = drop_inconsistent_pm(daily, min_ratio)
+    contradicted = daily.notna().all(axis=1) & cleaned.isna().all(axis=1)
+    out.loc[dates.isin(contradicted.index[contradicted]).to_numpy(), present] = np.nan
+    return out
+
+
 def _daily_mean(series, dates, min_hours):
     counts = series.groupby(dates).count()
     means = series.groupby(dates).mean()

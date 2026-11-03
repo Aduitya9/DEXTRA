@@ -109,3 +109,17 @@ def test_a_paired_difference_resamples_the_same_cities_for_both():
     assert point > 0 and low > 0 and low <= point <= high
     same, low, high = gap.paired_difference(a, a, draws=200)
     assert same == 0.0 and low == high == 0.0
+
+
+def test_rmse_averages_over_a_forecasters_seeds():
+    frame = pd.DataFrame({'y': [100.0, 100.0], 'a_seed1': [110.0, 110.0], 'a_seed2': [130.0, 130.0]})
+    assert gap.rmse(frame, ['a_seed1', 'a_seed2']) == pytest.approx(20.0)
+
+
+def test_paired_rmse_difference_finds_a_better_forecast_across_cities():
+    rng = np.random.default_rng(0)
+    y = rng.uniform(50, 300, 600)
+    frame = pd.DataFrame({'city': np.repeat(list('abcdef'), 100), 'y': y,
+                          'good': y + rng.normal(0, 5, 600), 'poor': y + rng.normal(0, 40, 600)})
+    d, low, high, p = gap.paired_rmse_difference(frame, ['good'], ['poor'], draws=100)
+    assert d < 0 and high < 0 and p < 0.05

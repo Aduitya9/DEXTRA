@@ -157,6 +157,23 @@ def paired_ap_difference(frame, with_columns, without_columns, group='city', dra
     return float(difference(keep)), float(low), float(high), float(p)
 
 
+def rmse(frame, columns):
+    """RMSE in AQI points against y, averaged over a forecaster's seed columns."""
+    return float(np.mean([np.sqrt(np.mean((frame[c].to_numpy() - frame['y'].to_numpy()) ** 2)) for c in columns]))
+
+
+def paired_rmse_difference(frame, columns_a, columns_b, group='city', draws=1000, seed=0):
+    """RMSE of a minus that of b, with a 95% interval and a two-sided p, resampling whole groups."""
+    parts = [part for _, part in frame.groupby(group, sort=True)]
+    difference = lambda rows: rmse(rows, columns_a) - rmse(rows, columns_b)
+    rng = np.random.default_rng(seed)
+    values = np.array([difference(pd.concat([parts[i] for i in rng.integers(0, len(parts), len(parts))],
+                                            ignore_index=True)) for _ in range(draws)], dtype=float)
+    low, high = np.percentile(values, [2.5, 97.5])
+    tail = min((values <= 0).sum(), (values >= 0).sum())
+    return float(difference(frame)), float(low), float(high), float(min(1.0, 2 * (tail + 1) / (len(values) + 1)))
+
+
 def holm(p_values):
     """Holm-adjusted p-values, in the order given: the i-th smallest is scaled by (m - i)."""
     p_values = np.asarray(p_values, dtype=float)

@@ -49,13 +49,9 @@ def station_evening(hourly):
     present = [p for p in PM if p in df.columns]
     if not present:
         return pd.DataFrame(columns=['date'])
+    # A station-day whose PM channels contradict each other loses both, as in the daily table.
+    df = daily_cpcb.blank_contradicted_pm(df)
     dates, hours = df['timestamp'].dt.normalize(), df['timestamp'].dt.hour
-    if len(present) == 2:
-        # A station-day whose PM channels contradict each other loses both, as in the daily table.
-        daily = df.groupby(dates)[present].mean()
-        cleaned = daily_cpcb.drop_inconsistent_pm(daily)
-        contradicted = daily.notna().all(axis=1) & cleaned.isna().all(axis=1)
-        df.loc[dates.isin(contradicted.index[contradicted]).to_numpy(), present] = np.nan
     windows = {f'{PM[p]}_{name}': _window_mean(df[p], dates, hours, *bounds)
                for p in present for name, bounds in WINDOWS.items()}
     # Every day the file covers keeps a row, with NaN where a window could not be read.
