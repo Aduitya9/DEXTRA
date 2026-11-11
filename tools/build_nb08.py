@@ -115,8 +115,9 @@ deadline = time.monotonic() + max(0.0, TIME_BUDGET_HOURS * 3600 - session_age)
 registry = training.RunRegistry(store, "runs/08")
 cities = sorted(daily.city.unique()) if LOCO_CITIES is None else list(LOCO_CITIES)
 models_run = lambda city: "loco-" + city.replace(" ", "_") + "-models"
+mechanism_run = lambda city: "loco-" + city.replace(" ", "_") + "-mechanism"
 baseline_run = lambda city: "loco-" + city.replace(" ", "_") + "-baselines"
-planned = [models_run(c) for c in cities] + [baseline_run(c) for c in cities]
+planned = [run(c) for run in (models_run, mechanism_run, baseline_run) for c in cities]
 finished = [name for name in planned if registry.done(name)]
 seeded = lambda name: [f"{name}_seed{s}" for s in SEEDS]
 
@@ -136,10 +137,10 @@ n_hourly = len(multires.HOURLY_CHANNELS)
 size = dict(d_model=D_MODEL, n_heads=N_HEADS, n_layers=N_LAYERS, dropout=DROPOUT)
 
 
-def all_token(kind, anchors=False, hours=False):
+def all_token(kind, anchors=False, hours=False, mixture=multires.MIXTURE):
     """The all-token head on one feature set, with the anchored forecast and the 72-hour tokens optional."""
     return multires.FinalModel(len(variates[kind]), LOOKBACK, HORIZON, target[kind],
-                               anchor_indices=anchor_indices if anchors else None,
+                               anchor_indices=anchor_indices if anchors else None, mixture=mixture,
                                n_channels=n_hourly if hours else 0, **size)
 
 
@@ -149,6 +150,8 @@ BUILDERS = {
     "head": ("daily", False, lambda: all_token("daily")),
     "control": ("evening", False, lambda: all_token("evening")),
     "anchor_inputs": ("final", False, lambda: all_token("final")),
+    "anchor_token": ("final", False, lambda: all_token("final", anchors=True, mixture=("mean",))),
+    "mean_today": ("final", False, lambda: all_token("final", anchors=True, mixture=("mean", "today"))),
     "anchored": ("final", False, lambda: all_token("final", anchors=True)),
     "multires": ("evening", True, lambda: all_token("evening", hours=True)),
     "dextra": ("final", True, lambda: all_token("final", anchors=True, hours=True)),
@@ -157,6 +160,7 @@ BUILDERS = {
     "patchtst": ("daily", False, lambda: deep_baselines.PatchTST(LOOKBACK, HORIZON, target["daily"], dropout=DROPOUT)),
 }
 MODEL_FAMILY = ["backbone", "head", "control", "anchor_inputs", "anchored", "multires", "dextra"]
+MECHANISM_FAMILY = ["anchor_token", "mean_today"]                               # the rungs between anchor_inputs and anchored
 BASELINE_FAMILY = ["lstm", "dlinear", "patchtst"]
 CANDIDATES = ["control", "anchor_inputs", "anchored", "multires", "dextra"]     # one of these becomes the final model
 KEEP_WEIGHTS = ["head"] + CANDIDATES                                            # frozen for the final test
@@ -273,6 +277,27 @@ for city in cities:
     print(f"  validation RMSE {summary};  ↑ recorded, {minutes} min")
 '''
 
+MECHANISM_LOOP = r'''for city in cities:
+    run = mechanism_run(city)
+    if registry.done(run):
+        print(f"✓ {run} already finished")
+        continue
+    if stopped or time.monotonic() > deadline:
+        stopped = stop_here()
+        break
+    print(f"\n▶ {run}")
+    started = time.monotonic()
+    frame, runs, _ = run_family(MECHANISM_FAMILY, fold_windows(city, MECHANISM_FAMILY))
+    if frame is None:
+        stopped = stop_here("time budget reached mid-fold; this fold starts again next session")
+        break
+    minutes = round((time.monotonic() - started) / 60, 2)
+    save_run(run, {"city": city, "runs": runs, "windows": len(frame) // HORIZON, "minutes": minutes},
+             frames={f"{run}.parquet": frame})
+    summary = pd.DataFrame(runs).groupby("model").val_rmse.mean().round(2).to_dict()
+    print(f"  validation RMSE {summary};  ↑ recorded, {minutes} min")
+'''
+
 BASELINE_LOOP = r'''for city in cities:
     run = baseline_run(city)
     if registry.done(run):
@@ -308,8 +333,9 @@ for city in cities:
     frame = frame.merge(before.loc[before.fold == city, KEYS + SAVED], on=KEYS, how="inner")
     frame = frame.merge(gbm_hourly.loc[gbm_hourly.fold == city, KEYS + ["gbm hourly"]], on=KEYS, how="left")
     frame = frame.merge(night_long[KEYS + ["nightly anchor"]], on=KEYS, how="left")
-    if registry.done(baseline_run(city)):
-        frame = frame.merge(load_frame(baseline_run(city)).drop(columns=["split", "y", "persistence"]), on=KEYS, how="left")
+    for extra in (mechanism_run(city), baseline_run(city)):
+        if registry.done(extra):
+            frame = frame.merge(load_frame(extra).drop(columns=["split", "y", "persistence"]), on=KEYS, how="left")
     frames[city] = frame
 print(f"{len(frames)} of {len(cities)} folds have their models")
 
@@ -345,6 +371,8 @@ TABLE = r'''LINEUP = [("Persistence", ["persistence"]),
           ("All-token head", seeded("head")),
           ("+ evening (control)", seeded("control")),
           ("+ anchors as inputs only", seeded("anchor_inputs")),
+          ("+ anchor token, mean start (RevIN)", seeded("anchor_token")),
+          ("+ learned mix of mean and today", seeded("mean_today")),
           ("+ anchored forecast", seeded("anchored")),
           ("+ 72-hour tokens", seeded("multires")),
           ("+ anchored forecast and 72-hour tokens", seeded("dextra"))]
@@ -417,6 +445,9 @@ def with_holm(table):
 STEPS = [("nightly anchor, no training: against persistence", ["nightly anchor"], ["persistence"]),
          ("evening features: against the head", seeded("control"), seeded("head")),
          ("anchors as inputs only: against control", seeded("anchor_inputs"), seeded("control")),
+         ("anchor token, mean start: against anchors as inputs only", seeded("anchor_token"), seeded("anchor_inputs")),
+         ("learned mix of mean and today: against mean start", seeded("mean_today"), seeded("anchor_token")),
+         ("nightly anchor in the mix: against mean and today", seeded("anchored"), seeded("mean_today")),
          ("anchored forecast: against anchors as inputs only", seeded("anchored"), seeded("anchor_inputs")),
          ("anchored forecast: against control", seeded("anchored"), seeded("control")),
          ("72-hour tokens: against control", seeded("multires"), seeded("control")),
@@ -426,7 +457,9 @@ STEPS = [("nightly anchor, no training: against persistence", ["nightly anchor"]
 ablation = {}
 if len(tested):
     for label in ("all", "next day"):
-        rows = [{"step": step, **compare(label, with_, without)} for step, with_, without in STEPS]
+        # A step whose models have not finished in every fold is left out, not guessed.
+        rows = [{"step": step, **compare(label, with_, without)} for step, with_, without in STEPS
+                if all(c in compared for c in with_ + without)]
         ablation[label] = with_holm(pd.DataFrame(rows).set_index("step"))
         print(f"\nWhat each part adds, {'all three horizons' if label == 'all' else 'next day only'} "
               "(first minus second; positive AP and negative RMSE are improvements):")
@@ -532,7 +565,7 @@ if len(tested):
 
 SAVE = r'''if SAVE_TO_HF and frames:
     keep = KEYS + ["split", "y", "persistence", "nightly anchor", "gbm", "gbm evening", "gbm hourly", "chronos-2 median", "chronos-bolt median", "final"]
-    columns = keep + [c for name in MODEL_FAMILY + BASELINE_FAMILY for c in seeded(name)]
+    columns = keep + [c for name in MODEL_FAMILY + MECHANISM_FAMILY + BASELINE_FAMILY for c in seeded(name)]
     columns += [c for name in sorted(ANCHORED_MODELS) for c in (f"{name}-weight-today", f"{name}-weight-night")]
     store.upload_df(pd.concat([f[[c for c in columns if c in f]].assign(fold=c2) for c2, f in frames.items()], ignore_index=True),
                     "processed/final_loco_forecasts.parquet", "Notebook 08: every forecaster on the held-out cities")
@@ -573,9 +606,13 @@ Fifteen leave-one-city-out folds, three seeds each. Every step changes one thing
 | All-token head | the same | notebook 05's finding, retrained here |
 | + evening (**control**) | + 9 evening summaries | notebook 07's model, retrained here |
 | + anchors as inputs only | + the 3 nightly anchors as ordinary variates | is the anchor just a useful feature? |
-| + anchored forecast | the same, and the forecast starts from the anchors | does the new mechanism add to that? |
+| + anchor token, mean start | the same, and a token saying where the anchors sit; the forecast still starts from the mean, as in RevIN | does telling the model where the anchors are help? |
+| + learned mix of mean and today | the same; the forecast starts from a learned mix of RevIN's start and NLinear's | is mixing the two known starts enough? |
+| + anchored forecast | the same; the nightly anchor joins the mix | does the new anchor add to the mechanism itself? |
 | + 72-hour tokens | control + 8 hourly tokens | do hourly tokens help? |
 | + both | everything | do the two parts combine? |
+
+Reversible normalisation (RevIN) and NLinear's last-value start are the two corners of the anchored forecast that already exist, which is why they are rungs of this ladder: a gain that a mix of those two already gives is not a gain from the new anchor.
 
 Then LSTM, DLinear and PatchTST. Gradient boosting, Chronos-2 and Chronos-Bolt come from earlier notebooks' saved forecasts on the same rows, and the nightly anchor is also scored on its own as a forecaster that was never trained.
 
@@ -586,10 +623,10 @@ Read on **validation rows only** (the other cities' 2024): among the five models
 No 2026 value reaches this notebook, and it stops if one does. These 2024-25 results have been explored before, so they choose and describe the model; the sealed 2026 test in notebook 09 is what confirms it.
 
 ### Runtime
-**GPU, about 4 to 5 hours on a T4**, about half that on an A100. Every piece is saved when it finishes."""),
+**GPU, about 5 to 6 hours on a T4**, about half that on an A100. Every piece is saved when it finishes."""),
     py(SETTINGS),
     md("""### If Colab disconnects
-Each piece — a fold's seven models, then a fold's three baselines — is saved in one commit when it finishes, and re-running skips everything finished. A fold cut off part-way starts again, about 15 minutes on a T4. If you are disconnected: reconnect and **Run all**. Near Colab's 12-hour limit: **Runtime → Disconnect and delete runtime**, then **Run all**. Keep this tab open in a window you can see, and your computer awake, while it runs. If it stops early, the tables below are still printed for the folds that finished.
+Each piece — a fold's seven models, then its two mechanism rungs, then its three baselines — is saved in one commit when it finishes, and re-running skips everything finished. A piece cut off part-way starts again, at most about 15 minutes on a T4. If you are disconnected: reconnect and **Run all**. Near Colab's 12-hour limit: **Runtime → Disconnect and delete runtime**, then **Run all**. Keep this tab open in a window you can see, and your computer awake, while it runs. If it stops early, the tables below are still printed for the folds that finished.
 
 Files named `loco-…-final` in `runs/08` are from an earlier four-model version of this notebook and are not read."""),
     md("## Secrets\n`HF_TOKEN` and `HF_DATASET_REPO`, as in the earlier notebooks."),
@@ -600,6 +637,8 @@ Files named `loco-…-final` in `runs/08` are from an earlier four-model version
     py(MODELS),
     md("## B · The model and its parts, fold by fold\nEach city held out in turn; seven models, three seeds each. The weights of the head and of the five candidates are kept."),
     py(MODEL_LOOP),
+    md("## B2 · Inside the anchored forecast\nThe two rungs between *anchors as inputs only* and the *anchored forecast*: the anchor token with RevIN's start from the mean, and a learned mix of the mean and today. They show whether the nightly anchor adds to the mechanism, or whether mixing the two known starts already does the work."),
+    py(MECHANISM_LOOP),
     md("## C · The deep baselines\nLSTM reads the daily and evening variates; DLinear and PatchTST read the target's own series, as they are usually run."),
     py(BASELINE_LOOP),
     md("## D · Which model is final\nThe rule fixed at the top, on validation rows only."),

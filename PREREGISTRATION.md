@@ -51,6 +51,12 @@ Reported beside them: each step of notebook 08's ablation, RMSE, next-day onsets
 per-city results, and the adaptive alarm against the fixed one (recall, false alarms and
 the spread of recall across cities, target recall 70%, step chosen on validation rows).
 
+Notebook 08 also trains two models that are not candidates: the rungs between
+candidates 2 and 3, where the forecast starts from the mean alone (reversible
+normalisation) or from a learned mix of the mean and today's value (NLinear's start).
+They exist to show whether the nightly anchor adds to the mechanism or whether mixing
+the two known starts already does the work, and are reported whichever it is.
+
 ## What will not happen
 
 No setting, feature, seed or model changes after the first 2026 score is read. If a bug is
@@ -70,6 +76,8 @@ validation scores were looked at.
 - The all-token head without evening features is retrained in notebook 08 too, and its
   weights are saved, so every neural model in the final test is frozen there.
 - The nightly anchor against persistence was added to the secondary comparisons.
+- Two diagnostic models were added to notebook 08, outside the candidates: the anchored
+  forecast restricted to the mean, and to the mean and today.
 - The first version said the model would be fixed before Diwali on 8 November 2026. It
   was not: the candidates changed on 11 November. No model here can be shaped by 2026
   either way, because training data ends in 2023 and validation in 2024, and CPCB had

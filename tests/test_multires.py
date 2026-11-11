@@ -275,3 +275,47 @@ def test_dynamics_of_a_day_uses_only_that_day_and_earlier():
     spiked = hourly.dynamics(hourly.city_hourly([series(True)], 'Delhi'))
     columns = [c for c in plain.columns if c.startswith('h_')]
     pd.testing.assert_frame_equal(plain[columns].iloc[:2], spiked[columns].iloc[:2])
+
+
+def test_a_mixture_of_the_mean_alone_is_reversible_normalisation():
+    """Same parameters, same windows: with only the mean to start from, the output is RevIN's."""
+    torch.manual_seed(0)
+    model = _model(anchors=[2, 3, 4], channels=0, mixture=('mean',)).eval()
+    window = torch.rand(3, 14, 5) * 100
+    weights = model.anchor_weights(window.numpy())
+    assert (weights[:, :, 0] == 1).all() and (weights[:, :, 1:] == 0).all()
+    encoded, centre, scale, _ = model._encode(window)
+    expected = model.trunk.denormalise(model.expert(encoded.flatten(1)), centre, scale)
+    assert torch.allclose(model(window), expected, atol=1e-4)
+
+
+def test_a_mixture_without_the_nightly_anchor_gives_it_no_weight():
+    torch.manual_seed(0)
+    model = _model(anchors=[2, 3, 4], channels=0, mixture=('mean', 'today')).eval()
+    window = torch.rand(4, 14, 5) * 100
+    weights = model.anchor_weights(window.numpy())
+    assert (weights[:, :, 2] == 0).all()
+    assert weights[:, :, :2].sum(axis=-1) == pytest.approx(np.ones((4, 3)), abs=1e-5)
+    # Before training the weights do not depend on the window, so moving the nightly
+    # anchor can only move where the forecast starts if it is in the mixture.
+    moved = window.clone()
+    moved[:, -1, 2:5] += 500
+    start = lambda m, w: (torch.from_numpy(m.anchor_weights(w.numpy())) * m.anchors(w)).sum(dim=-1)
+    assert torch.allclose(start(model, window), start(model, moved), atol=1e-3)
+    full = _model(anchors=[2, 3, 4], channels=0).eval()
+    assert not torch.allclose(start(full, window), start(full, moved), atol=1.0)
+
+
+def test_a_restricted_mixture_is_still_scale_equivariant():
+    torch.manual_seed(0)
+    model = _model(anchors=[2, 3, 4], channels=0, mixture=('mean', 'today')).eval()
+    window = torch.rand(1, 14, 5) * 100
+    bigger = window.clone()
+    bigger[:, :, [0, 2, 3, 4]] *= 10
+    assert model(bigger).detach().numpy() == pytest.approx(10 * model(window).detach().numpy(), rel=1e-2)
+
+
+def test_the_mixture_must_keep_the_mean_and_known_names():
+    for mixture in (('today',), ('mean', 'tomorrow')):
+        with pytest.raises(ValueError):
+            _model(anchors=[2, 3, 4], channels=0, mixture=mixture)

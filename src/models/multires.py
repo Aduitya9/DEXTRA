@@ -34,6 +34,12 @@ beats persistence on next-day severe days. One extra token tells the attention w
 the anchors sit relative to the window. The weights start close to the mean, so
 training begins from ordinary reversible normalisation.
 
+Two known methods are corners of this. All the weight on the mean is reversible
+normalisation (Kim et al., ICLR 2022); all of it on today is the last-value start of
+NLinear (Zeng et al., AAAI 2023). `mixture` restricts which anchors the forecast may
+start from, so that what the nightly anchor adds to the mechanism can be told apart
+from what a learned mix of those two already gives.
+
 Inputs travel as one flat tensor per window when there are hourly tokens, because the
 shared training loop passes a single input per batch. pack builds it and the model
 splits it again. Without hourly tokens the input is the usual (batch, lookback, variates).
@@ -51,6 +57,8 @@ HOURLY_CHANNELS = ['PM2.5', 'PM10', 'NO2', 'CO', 'O3', 'site_rel_humidity', 'sit
 HOURS = 72
 LAST_HOUR = 23
 ANCHORS = ('fortnight mean', 'today', 'nightly anchor')
+# The same three, as `mixture` names them.
+MIXTURE = ('mean', 'today', 'night')
 # Where the anchor weights start: almost all on the mean, as in reversible normalisation.
 MEAN_START_LOGIT = 3.0
 # Standardised distances beyond this are clipped before they reach the anchor token.
@@ -107,17 +115,24 @@ class FinalModel(nn.Module):
     """All-token inverted transformer, with hourly tokens (n_channels > 0) and anchors (anchor_indices) optional.
 
     `anchor_indices` gives, for each horizon, the variate holding that horizon's nightly
-    anchor; the value on the window's last day is the one used.
+    anchor; the value on the window's last day is the one used. `mixture` names the
+    anchors the forecast may start from, out of MIXTURE: ('mean',) alone is reversible
+    normalisation with the anchor token as an input, ('mean', 'today') a learned mix
+    of the two known starts, and all three the anchored forecast.
     """
 
-    def __init__(self, n_variates, lookback, horizon, target_index, anchor_indices=None,
+    def __init__(self, n_variates, lookback, horizon, target_index, anchor_indices=None, mixture=MIXTURE,
                  n_channels=len(HOURLY_CHANNELS), hours=HOURS, d_model=128, n_heads=8, n_layers=2, dropout=0.3):
         super().__init__()
         if anchor_indices is not None and len(anchor_indices) != horizon:
             raise ValueError(f"one anchor per horizon: {horizon} horizons, {len(anchor_indices)} anchors")
+        unknown = [name for name in mixture if name not in MIXTURE]
+        if unknown or 'mean' not in mixture:
+            raise ValueError(f"mixture must include 'mean' and draw from {MIXTURE}, not {tuple(mixture)}")
         self.n_variates, self.lookback, self.horizon = n_variates, lookback, horizon
         self.n_channels, self.hours = n_channels, hours
         self.anchor_indices = None if anchor_indices is None else list(anchor_indices)
+        self.mixture = [MIXTURE.index(name) for name in MIXTURE if name in mixture]
         self.trunk = ITransformer(n_variates, lookback, horizon, target_index,
                                   d_model=d_model, n_heads=n_heads, n_layers=n_layers, dropout=dropout)
         self.trunk.project = nn.Identity()
@@ -126,11 +141,13 @@ class FinalModel(nn.Module):
         if self.anchor_indices is not None:
             tokens += 1
             self.anchor_embed = nn.Linear(horizon + 1, d_model)
-            self.mix = nn.Linear(d_model, horizon * len(ANCHORS))
-            nn.init.zeros_(self.mix.weight)
-            start = torch.zeros(horizon, len(ANCHORS))
-            start[:, 0] = MEAN_START_LOGIT
-            self.mix.bias.data.copy_(start.flatten())
+            self.mix = None
+            if len(self.mixture) > 1:
+                self.mix = nn.Linear(d_model, horizon * len(self.mixture))
+                nn.init.zeros_(self.mix.weight)
+                start = torch.zeros(horizon, len(self.mixture))
+                start[:, 0] = MEAN_START_LOGIT
+                self.mix.bias.data.copy_(start.flatten())
         self.drop = nn.Dropout(dropout)
         self.expert = nn.Linear(tokens * d_model, horizon)
 
@@ -172,7 +189,14 @@ class FinalModel(nn.Module):
         return encoded, centre, scale, anchors
 
     def _weights(self, encoded):
-        return torch.softmax(self.mix(encoded.mean(dim=1)).view(-1, self.horizon, len(ANCHORS)), dim=-1)
+        """(batch, horizon, 3) weights over ANCHORS; an anchor outside the mixture gets none."""
+        weights = encoded.new_zeros(encoded.shape[0], self.horizon, len(ANCHORS))
+        if self.mix is None:
+            weights[:, :, self.mixture[0]] = 1.0
+        else:
+            logits = self.mix(encoded.mean(dim=1)).view(-1, self.horizon, len(self.mixture))
+            weights[:, :, self.mixture] = torch.softmax(logits, dim=-1)
+        return weights
 
     def forward(self, inputs):
         """Inputs as described above -> (batch, horizon) forecasts in AQI points."""

@@ -60,8 +60,8 @@ subprocess.run = lambda *a, **k: None
 
 nb = nbformat.read(PROJECT / "notebooks" / "08_final_model.ipynb", as_version=4)
 code = [c.source.replace("/content/DEXTRA", str(PROJECT).replace("\\", "/")) for c in nb.cells if c.cell_type == "code"]
-(settings, secrets, _pip, setup, models, model_loop, baseline_loop, gather, table, ablation, verdict, per_city, alarm,
- noise_cell, save) = code
+(settings, secrets, _pip, setup, models, model_loop, mechanism_loop, baseline_loop, gather, table, ablation, verdict,
+ per_city, alarm, noise_cell, save) = code
 pd.set_option("display.width", 250)
 pd.set_option("display.max_columns", 30)
 
@@ -79,7 +79,8 @@ exec(setup, ns)
 KEEP = ["Delhi", "Patna", "Bengaluru", "Lucknow", "Guwahati"]
 ns["daily"] = ns["daily"][ns["daily"].city.isin(KEEP)].reset_index(drop=True)
 ns["hourly_table"] = ns["hourly_table"][ns["hourly_table"].city.isin(KEEP)].reset_index(drop=True)
-for cell in (models, model_loop, baseline_loop, gather, table, ablation, verdict, per_city, alarm, noise_cell, save):
+for cell in (models, model_loop, mechanism_loop, baseline_loop, gather, table, ablation, verdict, per_city, alarm, noise_cell,
+             save):
     exec(cell, ns)
 runs = STORE / "runs" / "08"
 print(f"\nrecorded pieces: {sorted(p.stem for p in runs.glob('*.json')) if runs.exists() else []}")
