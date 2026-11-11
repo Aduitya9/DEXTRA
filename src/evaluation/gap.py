@@ -174,6 +174,69 @@ def paired_rmse_difference(frame, columns_a, columns_b, group='city', draws=1000
     return float(difference(frame)), float(low), float(high), float(min(1.0, 2 * (tail + 1) / (len(values) + 1)))
 
 
+def tied_average_precision(actual, scores):
+    """Average precision exactly as scikit-learn defines it, tied scores sharing one threshold.
+
+    Several times faster than the library call, which matters when every forecaster
+    is scored on a thousand resamples. NaN if nothing, or everything, is severe.
+    """
+    actual, scores = np.asarray(actual, dtype=bool), np.asarray(scores, dtype=float)
+    positives = int(actual.sum())
+    if positives == 0 or positives == len(actual):
+        return np.nan
+    order = np.argsort(-scores, kind='stable')
+    ranked, hit = scores[order], actual[order]
+    last = np.r_[np.nonzero(np.diff(ranked))[0], len(ranked) - 1]      # the last row of each run of tied scores
+    hits = np.cumsum(hit)[last]
+    return float(np.sum(hits / (last + 1) * np.diff(np.r_[0, hits])) / positives)
+
+
+class Resamples:
+    """Every forecaster scored on the same resamples of whole groups, so that any two can be compared.
+
+    paired_ap_difference resamples afresh for each comparison, and a table of
+    fifteen forecasters compared three ways would repeat that forty-five times.
+    Here each column's average precision and RMSE are computed once per resample
+    and every comparison is read off those. The resamples are drawn exactly as
+    paired_ap_difference draws them, so for the same seed the two agree.
+    """
+
+    def __init__(self, frame, columns, group='city', draws=1000, seed=0, threshold=RARE_AQI_THRESHOLD):
+        self.columns = list(dict.fromkeys(columns))
+        parts = [(part['y'].to_numpy(dtype=float), part[self.columns].to_numpy(dtype=float))
+                 for _, part in frame.groupby(group, sort=True)]
+        self.point = self._score(frame['y'].to_numpy(dtype=float), frame[self.columns].to_numpy(dtype=float), threshold)
+        rng = np.random.default_rng(seed)
+        replicates = []
+        for _ in range(draws):
+            pick = rng.integers(0, len(parts), len(parts))
+            replicates.append(self._score(np.concatenate([parts[i][0] for i in pick]),
+                                          np.concatenate([parts[i][1] for i in pick]), threshold))
+        self.replicates = {measure: np.array([r[measure] for r in replicates]) for measure in ('ap', 'rmse')}
+
+    @staticmethod
+    def _score(y, scores, threshold):
+        actual = y > threshold
+        return {'ap': np.array([tied_average_precision(actual, scores[:, j]) for j in range(scores.shape[1])]),
+                'rmse': np.sqrt(np.mean((scores - y[:, None]) ** 2, axis=0))}
+
+    def _mean(self, values, columns):
+        return values[..., [self.columns.index(c) for c in columns]].mean(axis=-1)
+
+    def value(self, columns, measure='ap'):
+        """A forecaster's score on the rows as given, averaged over its seed columns."""
+        return float(self._mean(self.point[measure], columns))
+
+    def difference(self, columns_a, columns_b, measure='ap'):
+        """a minus b: the difference, a 95% interval and a two-sided p counted as (k + 1) / (n + 1)."""
+        values = self._mean(self.replicates[measure], columns_a) - self._mean(self.replicates[measure], columns_b)
+        values = values[np.isfinite(values)]
+        low, high = np.percentile(values, [2.5, 97.5])
+        tail = min((values <= 0).sum(), (values >= 0).sum())
+        return (self.value(columns_a, measure) - self.value(columns_b, measure), float(low), float(high),
+                float(min(1.0, 2 * (tail + 1) / (len(values) + 1))))
+
+
 def holm(p_values):
     """Holm-adjusted p-values, in the order given: the i-th smallest is scaled by (m - i)."""
     p_values = np.asarray(p_values, dtype=float)

@@ -123,3 +123,43 @@ def test_paired_rmse_difference_finds_a_better_forecast_across_cities():
                           'good': y + rng.normal(0, 5, 600), 'poor': y + rng.normal(0, 40, 600)})
     d, low, high, p = gap.paired_rmse_difference(frame, ['good'], ['poor'], draws=100)
     assert d < 0 and high < 0 and p < 0.05
+
+
+def _scored_frame(seed=0, rows=900, cities='abcdef'):
+    rng = np.random.default_rng(seed)
+    y = rng.uniform(50, 420, rows)
+    frame = pd.DataFrame({'city': np.repeat(list(cities), rows // len(cities)), 'y': y})
+    for name, noise in (('good_seed1', 25), ('good_seed2', 30), ('poor_seed1', 70), ('poor_seed2', 80)):
+        frame[name] = y + rng.normal(0, noise, rows)
+    frame['coarse'] = np.round(y / 50) * 50                      # many tied scores
+    return frame
+
+
+def test_tied_average_precision_is_scikit_learns():
+    from sklearn.metrics import average_precision_score
+    frame = _scored_frame()
+    actual = frame.y.to_numpy() > 300
+    for column in ('good_seed1', 'poor_seed2', 'coarse'):
+        assert gap.tied_average_precision(actual, frame[column]) == pytest.approx(
+            average_precision_score(actual, frame[column]), abs=1e-12)
+    assert np.isnan(gap.tied_average_precision(np.zeros(5, dtype=bool), np.arange(5.0)))
+    assert np.isnan(gap.tied_average_precision(np.ones(5, dtype=bool), np.arange(5.0)))
+
+
+def test_resamples_agree_with_the_one_comparison_functions():
+    frame = _scored_frame(seed=1)
+    good, poor = ['good_seed1', 'good_seed2'], ['poor_seed1', 'poor_seed2']
+    resamples = gap.Resamples(frame, good + poor + ['coarse'], draws=60, seed=3)
+    assert resamples.difference(good, poor) == pytest.approx(gap.paired_ap_difference(frame, good, poor, draws=60, seed=3), abs=1e-9)
+    assert resamples.difference(good, poor, 'rmse') == pytest.approx(gap.paired_rmse_difference(frame, good, poor, draws=60, seed=3), abs=1e-9)
+    assert resamples.value(good) == pytest.approx(gap.average_precision(frame, good), abs=1e-12)
+    assert resamples.value(poor, 'rmse') == pytest.approx(gap.rmse(frame, poor), abs=1e-9)
+
+
+def test_resamples_see_a_better_forecaster():
+    frame = _scored_frame(seed=2)
+    resamples = gap.Resamples(frame, ['good_seed1', 'poor_seed1'], draws=200)
+    difference, low, high, p = resamples.difference(['good_seed1'], ['poor_seed1'])
+    assert difference > 0 and low > 0 and p < 0.05
+    difference, low, high, p = resamples.difference(['good_seed1'], ['poor_seed1'], 'rmse')
+    assert difference < 0 and high < 0 and p < 0.05
