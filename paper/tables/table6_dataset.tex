@@ -1,0 +1,29 @@
+\begin{table*}[t]
+\centering
+\caption{The fifteen study cities, 2019-01-01 to 2025-12-31. Severe days are those with a daily national AQI above 200 (the CPCB ``very poor'' boundary), counted over the whole record; an episode is a maximal run of consecutive severe days. Station counts are the stations reporting on a day in the assembled archive, not the full CAAQMS network. These counts describe the data, not the evaluation: the per-city results table counts severe targets inside the held-out window only, so its counts are smaller.}
+\label{tab:dataset}
+\footnotesize
+\resizebox{\ifdim\width>\textwidth\textwidth\else\width\fi}{!}{%
+\begin{tabular}{lllrrrrrrrrr}
+\toprule
+city & state & archetype & days & AQI days (\%) & stations/day & max stations & mean AQI & 95th pct & severe days & severe (\%) & episodes \\
+\midrule
+Delhi & Delhi & IGP-Biomass & 2557 & 100.0 & 6 & 6 & 199.9 & 398.7 & 1053 & 41.2 & 163 \\
+Patna & Bihar & IGP-Biomass & 2557 & 99.4 & 6 & 6 & 171.3 & 360.6 & 854 & 33.4 & 137 \\
+Lucknow & Uttar Pradesh & IGP-Biomass & 2557 & 100.0 & 6 & 6 & 147.5 & 331.6 & 616 & 24.1 & 133 \\
+Guwahati & Assam & Valley-Traffic & 2557 & 97.3 & 2 & 4 & 123.4 & 319.3 & 541 & 21.2 & 103 \\
+Kanpur & Uttar Pradesh & Industrial-Biomass & 2557 & 98.8 & 3 & 4 & 132.3 & 346.4 & 441 & 17.2 & 97 \\
+Varanasi & Uttar Pradesh & IGP-Biomass & 2557 & 98.4 & 4 & 4 & 115.9 & 316.5 & 426 & 16.7 & 82 \\
+Kolkata & West Bengal & Industrial & 2557 & 100.0 & 6 & 6 & 111.8 & 304.4 & 414 & 16.2 & 91 \\
+Bhopal & Madhya Pradesh & Traffic-Urban & 2557 & 88.3 & 1 & 2 & 123.4 & 270.8 & 245 & 9.6 & 80 \\
+Jaipur & Rajasthan & Dust-Traffic & 2557 & 100.0 & 3 & 3 & 119.2 & 230.5 & 195 & 7.6 & 84 \\
+Mumbai & Maharashtra & Coastal-Mixed & 2557 & 93.6 & 5 & 6 & 103.2 & 223.0 & 171 & 6.7 & 72 \\
+Ahmedabad & Gujarat & Industrial & 2557 & 98.0 & 4 & 6 & 113.9 & 209.2 & 145 & 5.7 & 79 \\
+Pune & Maharashtra & Traffic-Urban & 2557 & 90.7 & 3 & 5 & 110.5 & 208.7 & 139 & 5.4 & 51 \\
+Chennai & Tamil Nadu & Coastal-Mixed & 2557 & 100.0 & 5 & 6 & 70.8 & 118.6 & 25 & 1.0 & 16 \\
+Bengaluru & Karnataka & Traffic-Urban & 2557 & 100.0 & 5 & 6 & 70.3 & 112.0 & 2 & 0.1 & 2 \\
+Hyderabad & Telangana & Traffic-Urban & 2557 & 99.9 & 6 & 6 & 84.6 & 150.1 & 0 & 0.0 & 0 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

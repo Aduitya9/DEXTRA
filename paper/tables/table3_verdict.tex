@@ -1,0 +1,32 @@
+\begin{table*}[t]
+\centering
+\caption{The final model against each rival, with Holm-corrected p-values. Intervals spanning zero are reported as ties.}
+\label{tab:verdict}
+\footnotesize
+\resizebox{\ifdim\width>\textwidth\textwidth\else\width\fi}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+final against & AP difference & AP 95\% & AP p (Holm) & RMSE difference & RMSE p (Holm) \\
+\midrule
+Persistence & 0.079 & [+0.056, +0.122] & 0.036 & -5.971 & 0.036 \\
+Nightly anchor, no training & 0.064 & [+0.042, +0.116] & 0.036 & -4.990 & 0.036 \\
+Gradient boosting & 0.054 & [+0.023, +0.154] & 0.048 & -2.610 & 0.036 \\
+Gradient boosting + evening & 0.037 & [-0.012, +0.104] & 0.783 & -1.370 & 0.040 \\
+Gradient boosting + hourly shape & 0.022 & [-0.019, +0.079] & 1.000 & -0.936 & 0.084 \\
+DLinear & 0.032 & [+0.026, +0.054] & 0.036 & -2.242 & 0.036 \\
+PatchTST & 0.030 & [+0.023, +0.052] & 0.036 & -2.137 & 0.036 \\
+LSTM + evening & 0.004 & [-0.002, +0.020] & 0.687 & -0.316 & 0.036 \\
+Chronos-Bolt, zero-shot & 0.036 & [+0.023, +0.049] & 0.036 & -2.652 & 0.036 \\
+Chronos-2, zero-shot & 0.011 & [+0.002, +0.031] & 0.306 & -0.927 & 0.036 \\
+iTransformer & 0.033 & [+0.025, +0.058] & 0.036 & -2.086 & 0.036 \\
+All-token head & 0.011 & [+0.004, +0.052] & 0.066 & -1.243 & 0.036 \\
++ evening (control) & 0.003 & [-0.005, +0.017] & 0.815 & -0.372 & 0.036 \\
++ anchors as inputs only & 0.004 & [+0.001, +0.021] & 0.220 & -0.249 & 0.036 \\
++ anchor token, mean start (RevIN) & -0.001 & [-0.005, +0.014] & 1.000 & -0.128 & 0.084 \\
++ learned mix of mean and today & -0.000 & [-0.004, +0.014] & 1.000 & -0.124 & 0.084 \\
++ anchored forecast & 0.000 & [-0.003, +0.019] & 1.000 & -0.200 & 0.036 \\
++ 72-hour tokens & 0.001 & [-0.002, +0.007] & 1.000 & -0.166 & 0.040 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

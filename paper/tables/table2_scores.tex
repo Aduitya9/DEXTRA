@@ -1,0 +1,33 @@
+\begin{table*}[t]
+\centering
+\caption{Leave-one-city-out results across all fifteen cities, three seeds.}
+\label{tab:scores}
+\footnotesize
+\resizebox{\ifdim\width>\textwidth\textwidth\else\width\fi}{!}{%
+\begin{tabular}{lrrrrrr}
+\toprule
+forecaster & AP & onset AP & next-day AP & RMSE & next-day RMSE & onsets caught \\
+\midrule
+Persistence & 0.684 & 0.197 & 0.775 & 36.644 & 29.140 & 31.000 \\
+Nightly anchor, no training & 0.700 & 0.216 & 0.810 & 35.663 & 26.463 & 41.000 \\
+Gradient boosting & 0.709 & 0.306 & 0.788 & 33.283 & 27.023 & 98.000 \\
+Gradient boosting + evening & 0.726 & 0.320 & 0.822 & 32.042 & 24.582 & 103.000 \\
+Gradient boosting + hourly shape & 0.741 & 0.327 & 0.846 & 31.608 & 23.479 & 103.000 \\
+DLinear & 0.731 & 0.276 & 0.796 & 32.915 & 27.499 & 67.667 \\
+PatchTST & 0.733 & 0.273 & 0.797 & 32.810 & 27.403 & 51.333 \\
+LSTM + evening & 0.760 & 0.350 & 0.831 & 30.988 & 24.696 & 93.333 \\
+Chronos-Bolt, zero-shot & 0.727 & 0.270 & 0.795 & 33.325 & 27.768 & 76.000 \\
+Chronos-2, zero-shot & 0.752 & 0.310 & 0.807 & 31.599 & 26.889 & 81.000 \\
+iTransformer & 0.730 & 0.266 & 0.795 & 32.758 & 27.368 & 78.000 \\
+All-token head & 0.753 & 0.325 & 0.811 & 31.916 & 26.742 & 84.667 \\
++ evening (control) & 0.760 & 0.331 & 0.837 & 31.045 & 24.451 & 94.333 \\
++ anchors as inputs only & 0.759 & 0.325 & 0.835 & 30.922 & 24.164 & 101.667 \\
++ anchor token, mean start (RevIN) & 0.764 & 0.333 & 0.843 & 30.801 & 23.912 & 94.667 \\
++ learned mix of mean and today & 0.763 & 0.333 & 0.840 & 30.796 & 23.931 & 104.333 \\
++ anchored forecast & 0.763 & 0.330 & 0.842 & 30.872 & 23.893 & 96.000 \\
++ 72-hour tokens & 0.762 & 0.345 & 0.843 & 30.838 & 24.006 & 106.000 \\
+\textbf{+ anchored forecast and 72-hour tokens} & \textbf{0.763} & \textbf{0.343} & \textbf{0.844} & \textbf{30.672} & \textbf{23.492} & \textbf{108.667} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

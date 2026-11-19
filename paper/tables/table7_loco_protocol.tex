@@ -1,0 +1,30 @@
+\begin{table*}[t]
+\centering
+\caption{The leave-one-city-out protocol. In each of the fifteen folds the other fourteen cities train on 2019--2023 and validate on 2024, and the held-out city alone is scored on 2024--2025; it contributes nothing to training, validation, gap-filling medians or alarm levels. Severe days are days above AQI 200 in the held-out period. The per-city results table instead counts severe forecast \emph{targets} in the complete-case evaluation frame, where each day appears once per horizon, so its counts differ by construction.}
+\label{tab:loco}
+
+\footnotesize
+\resizebox{\ifdim\width>\textwidth\textwidth\else\width\fi}{!}{%
+\begin{tabular}{lrrrrr}
+\toprule
+held-out city & train days & val days & test days & test severe & test severe (\%) \\
+\midrule
+Delhi & 25564 & 5124 & 731 & 272 & 37.2 \\
+Patna & 25564 & 5124 & 731 & 184 & 25.2 \\
+Guwahati & 25564 & 5124 & 731 & 123 & 16.8 \\
+Lucknow & 25564 & 5124 & 731 & 82 & 11.2 \\
+Bhopal & 25564 & 5124 & 731 & 70 & 9.6 \\
+Jaipur & 25564 & 5124 & 731 & 55 & 7.5 \\
+Kolkata & 25564 & 5124 & 731 & 55 & 7.5 \\
+Pune & 25564 & 5124 & 731 & 42 & 5.7 \\
+Kanpur & 25564 & 5124 & 731 & 17 & 2.3 \\
+Mumbai & 25564 & 5124 & 731 & 16 & 2.2 \\
+Ahmedabad & 25564 & 5124 & 731 & 6 & 0.8 \\
+Chennai & 25564 & 5124 & 731 & 4 & 0.5 \\
+Varanasi & 25564 & 5124 & 731 & 2 & 0.3 \\
+Hyderabad & 25564 & 5124 & 731 & 0 & 0.0 \\
+Bengaluru & 25564 & 5124 & 731 & 0 & 0.0 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table*}

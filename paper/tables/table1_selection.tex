@@ -1,0 +1,16 @@
+\begin{table}[t]
+\centering
+\caption{Candidate selection on validation rows only. The pre-registered rule picks the lowest validation RMSE among candidates within 0.002 average precision of the control.}
+\label{tab:selection}
+\begin{tabular}{lrr}
+\toprule
+model & validation RMSE & validation AP \\
+\midrule
+control & 32.167 & 0.732 \\
+anchor\_inputs & 32.108 & 0.732 \\
+anchored & 32.014 & 0.734 \\
+multires & 31.906 & 0.736 \\
+\textbf{dextra} & \textbf{31.737} & \textbf{0.738} \\
+\bottomrule
+\end{tabular}
+\end{table}

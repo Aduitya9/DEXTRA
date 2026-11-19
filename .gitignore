@@ -25,3 +25,6 @@ __pycache__/
 
 # Agent/editor plugin installs (hundreds of MB, not part of the project)
 .agents/
+
+# The paper's vector figures are inputs to main.tex, not build output.
+!paper/figures/*.pdf
